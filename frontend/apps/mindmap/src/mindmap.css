@@ -1,0 +1,21 @@
+.mindmap-stage {
+  background: #f8fafc;
+}
+
+.mindmap-stage .map-container {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding-top: var(--editor-topbar-height);
+}
+
+/* 布局样式工具栏：避开顶部「返回看板」栏 */
+.mindmap-stage .mind-elixir-toolbar.lt {
+  top: calc(var(--editor-topbar-height) + 12px);
+  left: 16px;
+  z-index: 1500;
+}
+
+.mindmap-stage .mind-elixir-toolbar.rb {
+  z-index: 1500;
+}

@@ -1,0 +1,196 @@
+.card-description-editor-wrap {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    background: #fff;
+}
+
+.card-description-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg-elevated);
+}
+
+.card-description-toolbar-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding-right: 8px;
+    margin-right: 8px;
+    border-right: 1px solid var(--line);
+}
+
+.card-description-toolbar-group:last-child {
+    border-right: none;
+    margin-right: 0;
+    padding-right: 0;
+}
+
+.card-description-toolbar-btn {
+    border: none;
+    background: transparent;
+    color: var(--text);
+    min-width: 30px;
+    height: 30px;
+    border-radius: 4px;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 8px;
+}
+
+.card-description-toolbar-btn:hover {
+    background: var(--surface-hover);
+}
+
+.card-description-toolbar-btn.is-active {
+    background: rgba(245, 197, 24, 0.18);
+    color: var(--accent);
+}
+
+.card-description-toolbar-select {
+    height: 30px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--text);
+    font-size: 13px;
+    padding: 0 8px;
+}
+
+.card-description-toolbar-group-colors {
+    align-items: center;
+}
+
+.card-description-toolbar-colors {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.card-description-toolbar-label {
+    font-size: 12px;
+    color: var(--muted);
+    white-space: nowrap;
+}
+
+.card-description-color-swatches {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.card-description-color-swatch {
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: var(--swatch-color, transparent);
+    cursor: pointer;
+    padding: 0;
+    flex-shrink: 0;
+}
+
+.card-description-color-swatch.is-reset {
+    background: linear-gradient(135deg, #ffffff 0 46%, #ef4444 46% 54%, #ffffff 54% 100%);
+}
+
+.card-description-color-swatch.is-active {
+    box-shadow: 0 0 0 2px var(--accent);
+}
+
+.card-description-color-swatch:hover {
+    transform: scale(1.08);
+}
+
+.card-description-color-input {
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: transparent;
+    cursor: pointer;
+}
+
+.card-description-color-input::-webkit-color-swatch-wrapper {
+    padding: 2px;
+}
+
+.card-description-color-input::-webkit-color-swatch {
+    border: none;
+    border-radius: 2px;
+}
+
+.card-description-editor-host {
+    min-height: 220px;
+    max-height: 360px;
+    overflow: auto;
+    padding: 16px 18px;
+    background: #fff;
+    color: #1f2328;
+}
+
+.card-description-editor-host.ProseMirror,
+.card-description-editor-host.tiptap,
+.card-description-editor-host .ProseMirror {
+    min-height: 188px;
+    outline: none;
+    font-size: 15px;
+    line-height: 1.65;
+    width: 100%;
+}
+
+.card-description-editor-host .ProseMirror p {
+    margin: 0 0 0.75em;
+}
+
+.card-description-editor-host .ProseMirror h1,
+.card-description-editor-host .ProseMirror h2,
+.card-description-editor-host .ProseMirror h3 {
+    margin: 0 0 0.65em;
+    line-height: 1.35;
+    font-weight: 700;
+}
+
+.card-description-editor-host .ProseMirror h1 {
+    font-size: 1.6em;
+}
+
+.card-description-editor-host .ProseMirror h2 {
+    font-size: 1.35em;
+}
+
+.card-description-editor-host .ProseMirror h3 {
+    font-size: 1.15em;
+}
+
+.card-description-editor-host .ProseMirror ul,
+.card-description-editor-host .ProseMirror ol {
+    margin: 0 0 0.75em;
+    padding-left: 1.4em;
+}
+
+.card-description-editor-host .ProseMirror a {
+    color: #2563eb;
+    text-decoration: underline;
+}
+
+.card-description-editor-host .ProseMirror blockquote {
+    margin: 0 0 0.75em;
+    padding-left: 1em;
+    border-left: 3px solid #d1d5db;
+    color: #4b5563;
+}
+
+.card-description-editor-host .ProseMirror p.is-editor-empty:first-child::before {
+    color: #9aa3ad;
+    content: attr(data-placeholder);
+    float: left;
+    height: 0;
+    pointer-events: none;
+}

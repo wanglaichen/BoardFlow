@@ -1,6 +1,6 @@
 # BoardFlow
 
-流程化看板项目，参考 [领歌 lg.team](https://www.lg.team/kanban/board_list) 的看板交互，用于管理项目流程、列表和卡片。
+流程化看板项目，参考 [领歌 lg.team] 看板交互，用于管理项目流程、列表和卡片。
 
 ## 功能
 
@@ -13,7 +13,6 @@
 
 ## 技术栈
 
-与 `tools_102BossHireTag` 保持一致：
 
 - Python 3
 - Flask
@@ -140,7 +139,7 @@ json  强制使用本地 JSON
 cp env.example .env
 ```
 
-Redis 环境变量（与 `tools_102BossHireTag` 一致）：
+Redis 环境变量：
 
 ```text
 STORAGE_BACKEND=redis
@@ -168,7 +167,7 @@ Redis 键结构（`REDIS_KEY_PREFIX` 默认为 `jjob:boardflow:state`）：
 
 ## 部署
 
-参考 `tools_102BossHireTag` 的 Vercel + Git tag 发布流程，配置：
+ Vercel + Git tag 发布流程，配置：
 
 ```text
 REDIS_URL

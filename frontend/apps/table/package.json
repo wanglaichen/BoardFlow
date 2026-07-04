@@ -1,0 +1,20 @@
+{
+  "name": "@boardflow/app-table",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prebuild": "node ../../scripts/copy-luckysheet.js",
+    "build": "vite build",
+    "dev": "vite"
+  },
+  "dependencies": {
+    "@boardflow/editor-shell": "0.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "luckysheet": "^2.1.13",
+    "vite": "^6.0.3"
+  }
+}

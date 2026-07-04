@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>{{ card_title }} - {{ editor_key }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='apps/' ~ static_app ~ '/app.css') }}">
+</head>
+<body
+    data-board-id="{{ board_id }}"
+    data-card-id="{{ card_id }}"
+    data-card-title="{{ card_title }}"
+    data-return-url="{{ return_url }}"
+    data-editor-key="{{ editor_key }}"
+>
+    <div id="root"></div>
+    <script type="module" src="{{ url_for('static', filename='apps/' ~ static_app ~ '/app.js') }}"></script>
+</body>
+</html>

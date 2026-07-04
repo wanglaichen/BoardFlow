@@ -1,0 +1,15 @@
+{
+  "name": "boardflow-frontend",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @boardflow/app-canvas --workspace @boardflow/app-mindmap --workspace @boardflow/app-table --workspace @boardflow/app-description",
+    "build:canvas": "npm run build --workspace @boardflow/app-canvas",
+    "build:mindmap": "npm run build --workspace @boardflow/app-mindmap",
+    "build:table": "npm run build --workspace @boardflow/app-table",
+    "build:description": "npm run build --workspace @boardflow/app-description"
+  }
+}
