@@ -1,0 +1,10 @@
+/data
+/logs
+/__pycache__
+/.env
+.vercel/
+.venv/
+*.pyc
+/frontend/node_modules
+/frontend/apps/*/node_modules
+/frontend/packages/*/node_modules
