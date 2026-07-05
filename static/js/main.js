@@ -518,8 +518,29 @@ window.addEventListener("click", (event) => {
 
 init();
 
+async function loadAppVersion() {
+    const badge = document.getElementById("appVersionBadge");
+    if (!badge) {
+        return;
+    }
+    try {
+        const response = await fetch("/api/version");
+        if (!response.ok) {
+            return;
+        }
+        const payload = await response.json();
+        if (payload.label) {
+            badge.textContent = payload.label;
+            badge.title = `BoardFlow ${payload.label}`;
+        }
+    } catch (_error) {
+        // keep server-rendered fallback
+    }
+}
+
 async function init() {
     cleanupModalOverlay();
+    loadAppVersion();
     try {
         await loadAuth();
         updateNavAuth();

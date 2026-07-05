@@ -36,7 +36,14 @@ def resolve_asset_version() -> str:
 
 @app.context_processor
 def inject_asset_version():
-    return {"asset_version": resolve_asset_version()}
+    from config import format_app_version_label, read_app_version
+
+    version = read_app_version()
+    return {
+        "asset_version": resolve_asset_version(),
+        "app_version": version,
+        "app_version_label": format_app_version_label(version),
+    }
 
 storage = create_boardflow_storage(AppConfig.__dict__)
 user_service = UserService(storage, auth_service=None)
@@ -76,7 +83,7 @@ else:
 
 
 def _is_public_api_path(path: str) -> bool:
-    return path == "/api/auth/login"
+    return path in ("/api/auth/login", "/api/version")
 
 
 def _is_public_page_path(path: str) -> bool:

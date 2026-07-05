@@ -21,6 +21,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set release version from tag
+        run: echo "${GITHUB_REF_NAME#v}" > VERSION
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:

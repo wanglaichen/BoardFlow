@@ -36,10 +36,30 @@ def resolve_data_path() -> Path:
 
 
 DATA_PATH = resolve_data_path()
+VERSION_FILE = BASE_DIR / "VERSION"
+
+
+def read_app_version() -> str:
+    override = (os.getenv("APP_VERSION") or "").strip()
+    if override:
+        return override.lstrip("vV")
+    if VERSION_FILE.exists():
+        text = VERSION_FILE.read_text(encoding="utf-8").strip()
+        if text:
+            return text.lstrip("vV")
+    return "dev"
+
+
+def format_app_version_label(version: str | None = None) -> str:
+    value = (version if version is not None else read_app_version()).strip() or "dev"
+    if value == "dev":
+        return "dev"
+    return value if value.startswith("v") else f"v{value}"
 
 
 class AppConfig:
     SECRET_KEY = os.getenv("SECRET_KEY", "boardflow-dev")
+    APP_VERSION = read_app_version()
     APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
     APP_PORT = int(os.getenv("APP_PORT", os.getenv("PORT", "9213")))
     DATA_DIR = str(DATA_PATH)

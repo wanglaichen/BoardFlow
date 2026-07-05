@@ -27,6 +27,19 @@ def init_api(board_service, auth_service, user_service, share_service):
     def _require_super_admin():
         auth_service.require_super_admin()
 
+    @api_bp.route("/version", methods=["GET"])
+    def get_version():
+        from config import format_app_version_label, read_app_version
+
+        version = read_app_version()
+        return jsonify(
+            {
+                "name": "BoardFlow",
+                "version": version,
+                "label": format_app_version_label(version),
+            }
+        )
+
     @api_bp.route("/settings", methods=["GET"])
     def get_settings():
         return jsonify(board_service.get_settings())
