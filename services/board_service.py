@@ -259,6 +259,52 @@ class BoardService:
 
         return existing
 
+    def _ensure_super_admin_organization(
+        self,
+        org_name: str,
+        global_orgs: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None:
+        normalized = (org_name or "").strip()
+        if not normalized or normalized == PERSONAL_BOARD_ORG_NAME:
+            return None
+
+        global_orgs = global_orgs if global_orgs is not None else self._read_global_organizations()
+        existing = next(
+            (
+                org
+                for org in global_orgs
+                if (org.get("name") or "").strip() == normalized
+                and (
+                    org.get("created_by_type") == SUPER_ADMIN_TENANT_TYPE
+                    or not org.get("created_by_type")
+                )
+            ),
+            None,
+        )
+        now = _now_iso()
+        if not existing:
+            existing = {
+                "id": f"org_{uuid.uuid4().hex[:8]}",
+                "name": normalized,
+                "note": "",
+                **SUPER_ADMIN_ORG_CREATOR,
+                "created_at": now,
+                "updated_at": now,
+            }
+            global_orgs.append(existing)
+            self._write_global_organizations(global_orgs)
+
+        return existing
+
+    def _ensure_organization_for_board(self, org_name: str) -> None:
+        user = self.auth_service.get_current_user() if self.auth_service else None
+        if user and user.get("is_super_admin"):
+            self._ensure_super_admin_organization(org_name)
+            return
+        user_id = self._current_user_id()
+        if user_id:
+            self._ensure_user_organization(user_id, org_name)
+
     def _current_user_id(self) -> str | None:
         if not self.auth_service:
             return None
@@ -273,6 +319,10 @@ class BoardService:
             "simsun",
             "simhei",
             "kaiti",
+            "stkaiti",
+            "stxingkai",
+            "simli",
+            "youyuan",
             "pingfang-sc",
             "noto-sans-sc",
             "arial",
@@ -627,9 +677,7 @@ class BoardService:
             self._apply_board_status(data, board, payload.get("status_id") or payload.get("status") or "not_started")
             data.setdefault("boards", []).append(board)
             self._write(data)
-            user_id = self._current_user_id()
-            if user_id:
-                self._ensure_user_organization(user_id, board.get("organization"))
+            self._ensure_organization_for_board(board.get("organization"))
             return board
 
     def update_board(self, board_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -647,9 +695,8 @@ class BoardService:
                 raise ValueError("看板标题不能为空")
             board["updated_at"] = _now_iso()
             self._write(data)
-            user_id = self._current_user_id()
-            if user_id and "organization" in payload:
-                self._ensure_user_organization(user_id, board.get("organization"))
+            if "organization" in payload:
+                self._ensure_organization_for_board(board.get("organization"))
             return board
 
     def delete_board(self, board_id: str) -> dict[str, Any]:
@@ -1481,4 +1528,8 @@ class BoardService:
             imported = apply_import(current, package, mode=mode)
             self._write(imported)
             return validation
+
+    def iter_clear_all_system_data(self):
+        self.clear_board_access()
+        yield from self.storage.iter_clear_all_system_data()
 

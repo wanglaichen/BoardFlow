@@ -28,6 +28,7 @@ const state = {
 };
 
 const PERSONAL_BOARD_ORGANIZATION = "个人看板";
+const BOARD_ORG_CUSTOM_VALUE = "__custom__";
 const BOARD_HUB_STAR_STORAGE_KEY = "boardflow:starred-boards";
 
 function normalizeBoardOrganization(name) {
@@ -40,10 +41,98 @@ function formatBoardOrganization(name) {
 }
 
 function getBoardOrgElements() {
-    return {
-        input: document.getElementById("boardOrgInput"),
-        options: document.getElementById("boardOrgOptions"),
-    };
+    return ensureBoardOrgField();
+}
+
+function bindBoardOrgFormFieldOnce() {
+    const select = document.getElementById("boardOrgSelect");
+    if (!select || select.dataset.bound === "1") {
+        return;
+    }
+    select.dataset.bound = "1";
+    select.addEventListener("change", syncBoardOrgCustomField);
+}
+
+function ensureBoardOrgField() {
+    let select = document.getElementById("boardOrgSelect");
+    let customInput = document.getElementById("boardOrgCustomInput");
+    if (select && customInput) {
+        bindBoardOrgFormFieldOnce();
+        return { select, customInput };
+    }
+
+    const modalBody = document.querySelector("#boardFormModal .modal-body");
+    if (!modalBody) {
+        return { select: null, customInput: null };
+    }
+
+    const legacyInput = document.getElementById("boardOrgInput");
+    const legacyValue = (legacyInput?.value || "").trim();
+    document.getElementById("boardOrgOptions")?.remove();
+
+    const combo = document.createElement("div");
+    combo.className = "board-org-combo";
+    combo.id = "boardOrgField";
+    combo.innerHTML = `
+        <select id="boardOrgSelect" class="form-select"></select>
+        <input
+            id="boardOrgCustomInput"
+            class="form-control board-org-custom-input"
+            type="text"
+            placeholder="输入自定义组织名称"
+            autocomplete="off"
+            hidden
+        >
+    `;
+
+    const existingField = document.getElementById("boardOrgField");
+    if (existingField) {
+        existingField.replaceWith(combo);
+    } else if (legacyInput) {
+        legacyInput.replaceWith(combo);
+    } else {
+        const orgLabel = Array.from(modalBody.querySelectorAll(".field-label")).find(
+            (node) => node.textContent.trim() === "所属组织"
+        );
+        if (orgLabel) {
+            orgLabel.insertAdjacentElement("afterend", combo);
+        } else {
+            modalBody.appendChild(combo);
+        }
+    }
+
+    select = document.getElementById("boardOrgSelect");
+    customInput = document.getElementById("boardOrgCustomInput");
+    if (legacyValue && customInput) {
+        customInput.dataset.legacyValue = legacyValue;
+    }
+
+    bindBoardOrgFormFieldOnce();
+    return { select, customInput };
+}
+
+function syncBoardOrgCustomField() {
+    const { select, customInput } = ensureBoardOrgField();
+    if (!select || !customInput) {
+        return;
+    }
+    const useCustom = select.value === BOARD_ORG_CUSTOM_VALUE;
+    customInput.hidden = !useCustom;
+    if (useCustom) {
+        customInput.focus();
+    }
+}
+
+function getBoardOrgValue() {
+    const { select, customInput } = ensureBoardOrgField();
+    if (!select) {
+        return PERSONAL_BOARD_ORGANIZATION;
+    }
+    if (select.value === BOARD_ORG_CUSTOM_VALUE) {
+        const name = (customInput?.value || "").trim();
+        return name ? normalizeBoardOrganization(name) : null;
+    }
+    return normalizeBoardOrganization(select.value);
 }
 
 const appView = document.getElementById("appView");
@@ -127,6 +216,7 @@ document.getElementById("deleteCardBtn").addEventListener("click", deleteCurrent
 document.getElementById("submitCommentBtn").addEventListener("click", submitComment);
 document.getElementById("addChecklistItemBtn").addEventListener("click", addChecklistItem);
 document.getElementById("saveBoardFormBtn").addEventListener("click", saveBoardForm);
+ensureBoardOrgField();
 document.getElementById("createBoardNavBtn").addEventListener("click", () => {
     openBoardForm().catch((error) => showError(error.message || "打开看板表单失败"));
 });
@@ -944,6 +1034,20 @@ function getDefaultOrgForHub() {
     return PERSONAL_BOARD_ORGANIZATION;
 }
 
+function syncBoardHubForOrganization(orgName) {
+    const organization = normalizeBoardOrganization(orgName);
+    state.boardHub.sharedOwnerType = "";
+    state.boardHub.sharedOwnerId = "";
+    state.boardHub.sharedOrgId = "";
+    if (organization === PERSONAL_BOARD_ORGANIZATION) {
+        state.boardHub.scope = "personal";
+        state.boardHub.orgName = "";
+        return;
+    }
+    state.boardHub.scope = "org";
+    state.boardHub.orgName = organization;
+}
+
 function getStarredBoardIds() {
     try {
         const raw = localStorage.getItem(BOARD_HUB_STAR_STORAGE_KEY);
@@ -1040,10 +1144,37 @@ function getBoardStatuses() {
 }
 
 function getOrganizations() {
+    let organizations;
     if (state.authUser?.is_super_admin) {
-        return state.settings.organizations || state.currentBoard?.settings?.organizations || [];
+        organizations = copyOrganizationList(
+            state.settings.organizations || state.currentBoard?.settings?.organizations || []
+        );
+    } else {
+        organizations = copyOrganizationList(state.settings.organizations || []);
     }
-    return state.settings.organizations || [];
+
+    const seen = new Set(
+        organizations.map((item) => (item.name || "").trim()).filter(Boolean)
+    );
+    for (const board of state.boards || []) {
+        if (board.shared) {
+            continue;
+        }
+        const name = (board.organization || "").trim();
+        if (!name || name === PERSONAL_BOARD_ORGANIZATION || seen.has(name)) {
+            continue;
+        }
+        seen.add(name);
+        organizations.push({ id: "", name, note: "" });
+    }
+
+    return organizations.sort((left, right) =>
+        (left.name || "").localeCompare(right.name || "", "zh-CN")
+    );
+}
+
+function copyOrganizationList(items) {
+    return (items || []).map((item) => ({ ...item }));
 }
 
 function getSharedBoards() {
@@ -1275,33 +1406,43 @@ function populateBoardStatusSelect(selectedId = "not_started") {
 }
 
 function populateBoardOrgInput(selectedName = PERSONAL_BOARD_ORGANIZATION) {
-    const { input: orgInput, options: orgOptions } = getBoardOrgElements();
-    if (!orgInput) {
+    const { select, customInput } = ensureBoardOrgField();
+    if (!select || !customInput) {
         throw new Error("看板表单组件缺失，请刷新页面后重试");
     }
 
+    const legacyValue = (customInput.dataset.legacyValue || "").trim();
+    delete customInput.dataset.legacyValue;
+    const current = normalizeBoardOrganization(selectedName || legacyValue);
     const organizations = getOrganizations();
-    const current = normalizeBoardOrganization(selectedName);
-    const seen = new Set([PERSONAL_BOARD_ORGANIZATION]);
-    const options = [`<option value="${escapeHtml(PERSONAL_BOARD_ORGANIZATION)}"></option>`];
+    const seen = new Set();
+    const options = [];
 
-    organizations.forEach((item) => {
-        const name = (item.name || "").trim();
+    function addOption(value, label = value) {
+        const name = (value || "").trim();
         if (!name || seen.has(name)) {
             return;
         }
         seen.add(name);
-        options.push(`<option value="${escapeHtml(name)}"></option>`);
-    });
-
-    if (!seen.has(current)) {
-        options.push(`<option value="${escapeHtml(current)}"></option>`);
+        options.push(`<option value="${escapeHtml(name)}">${escapeHtml(label)}</option>`);
     }
 
-    if (orgOptions) {
-        orgOptions.innerHTML = options.join("");
+    addOption(PERSONAL_BOARD_ORGANIZATION);
+    organizations.forEach((item) => addOption(item.name));
+    options.push(`<option value="${BOARD_ORG_CUSTOM_VALUE}">自定义名称…</option>`);
+
+    select.innerHTML = options.join("");
+
+    if (seen.has(current)) {
+        select.value = current;
+        customInput.value = "";
+        customInput.hidden = true;
+        return;
     }
-    orgInput.value = current;
+
+    select.value = BOARD_ORG_CUSTOM_VALUE;
+    customInput.value = current;
+    customInput.hidden = false;
 }
 
 function closeBoardMetaMenus(exceptMenu = null) {
@@ -1456,6 +1597,10 @@ const EDITABLE_FONT_FAMILIES = [
     { id: "simsun", label: "宋体", stack: 'SimSun, "Songti SC", serif' },
     { id: "simhei", label: "黑体", stack: 'SimHei, "Heiti SC", sans-serif' },
     { id: "kaiti", label: "楷体", stack: 'KaiTi, "Kaiti SC", serif' },
+    { id: "stkaiti", label: "华文楷体", stack: 'STKaiti, "Kaiti SC", KaiTi, serif' },
+    { id: "stxingkai", label: "华文行楷", stack: 'STXingkai, "Xingkai SC", cursive' },
+    { id: "simli", label: "隶书", stack: 'SimLi, "LiSu", serif' },
+    { id: "youyuan", label: "幼圆", stack: 'YouYuan, "Yuanti SC", sans-serif' },
     { id: "pingfang-sc", label: "苹方", stack: '"PingFang SC", "Microsoft YaHei", sans-serif' },
     { id: "noto-sans-sc", label: "思源黑体", stack: '"Noto Sans SC", "Microsoft YaHei", sans-serif' },
     { id: "arial", label: "Arial", stack: 'Arial, Helvetica, sans-serif' },
@@ -1490,7 +1635,7 @@ const EDITABLE_FONT_SCOPES = [
     {
         id: "board_title",
         label: "看板标题",
-        desc: "看板页标题名称（「看板标题：」前缀固定白色，不受此项影响）",
+        desc: "看板页标题与首页看板卡片名称（「看板标题：」前缀固定白色，不受此项影响）",
         preview: "个人记录",
         previewWithLabel: true,
     },
@@ -2114,6 +2259,23 @@ function renderDataTransferPanel() {
                 <div class="transfer-report" id="importSystemReport"></div>
             </div>
 
+            <div class="transfer-section transfer-danger-zone">
+                <h3>危险操作</h3>
+                <p class="transfer-desc">
+                    清理将删除<strong>全部</strong>用户账号、看板、列表、卡片、分享记录与系统设置，恢复为初始空数据。
+                    环境变量中的超管账号仍可登录；此操作不可撤销，建议先导出系统全量备份。
+                </p>
+                <div class="transfer-actions">
+                    <button class="btn btn-outline-danger" id="clearSystemDataBtn" type="button">清理所有系统数据</button>
+                </div>
+                <div class="transfer-clear-progress" id="clearSystemProgress" hidden>
+                    <div class="transfer-clear-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+                        <div class="transfer-clear-progress-fill" id="clearSystemProgressFill"></div>
+                    </div>
+                    <p class="transfer-clear-progress-text" id="clearSystemProgressText"></p>
+                </div>
+            </div>
+
             ${renderOrgBoardTransferBlock({
                 prefix: "adminTransfer",
                 ownerOnly: false,
@@ -2240,6 +2402,73 @@ async function importTransferFile(file, { expectedKind, mode, ownerOnly = false 
         throw new Error(payload.message || "导入失败");
     }
     return payload;
+}
+
+function updateClearSystemProgress(event) {
+    const wrap = document.getElementById("clearSystemProgress");
+    const fill = document.getElementById("clearSystemProgressFill");
+    const text = document.getElementById("clearSystemProgressText");
+    if (!wrap || !fill || !text) {
+        return;
+    }
+    wrap.hidden = false;
+    const percent = Number.isFinite(event?.percent) ? event.percent : 0;
+    fill.style.width = `${percent}%`;
+    fill.parentElement?.setAttribute("aria-valuenow", String(percent));
+    text.textContent = event?.message || "";
+}
+
+async function clearAllSystemData(onProgress) {
+    const response = await fetch("/api/data-transfer/clear-system", { method: "POST" });
+    if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.message || "清理请求失败");
+    }
+    if (!response.body) {
+        throw new Error("浏览器不支持流式进度响应");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let lastEvent = null;
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+            break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) {
+                continue;
+            }
+            const event = JSON.parse(trimmed);
+            lastEvent = event;
+            onProgress?.(event);
+            if (event.error) {
+                throw new Error(event.message || "清理失败");
+            }
+        }
+    }
+
+    const tail = buffer.trim();
+    if (tail) {
+        const event = JSON.parse(tail);
+        lastEvent = event;
+        onProgress?.(event);
+        if (event.error) {
+            throw new Error(event.message || "清理失败");
+        }
+    }
+
+    if (!lastEvent?.done) {
+        throw new Error("清理未完成，请稍后重试");
+    }
+    return lastEvent;
 }
 
 function bindOrgBoardTransferBlock(options = {}) {
@@ -2406,6 +2635,29 @@ function bindDataTransferPanel() {
             showError(error.message || "导入失败");
             importBtn.disabled = false;
         }
+    });
+
+    const clearBtn = document.getElementById("clearSystemDataBtn");
+    clearBtn?.addEventListener("click", () => {
+        openConfirmDeleteDialog({
+            title: "清理所有系统数据",
+            message:
+                "将删除 <strong>全部</strong> 用户、看板、分享与系统设置，恢复为初始空数据。环境变量中的超管账号仍可登录。此操作不可撤销。",
+            onSubmit: async () => {
+                confirmDeleteModal.hide();
+                clearBtn.disabled = true;
+                updateClearSystemProgress({ message: "正在启动清理…", percent: 0 });
+                try {
+                    await clearAllSystemData(updateClearSystemProgress);
+                    await loadSettings();
+                    await loadBoards();
+                    showSuccess("系统数据已清理完成");
+                    renderRoute();
+                } finally {
+                    clearBtn.disabled = false;
+                }
+            },
+        });
     });
 
     bindOrgBoardTransferBlock({ prefix: "adminTransfer", ownerOnly: false });
@@ -2953,7 +3205,27 @@ function renderBoardStarButton(boardId, { className = "board-hub-star" } = {}) {
     `;
 }
 
-function renderBoardHubCard(board) {
+function renderBoardHubCardOrg(board, hub = state.boardHub) {
+    if (!shouldShowBoardHubCardOrg(board, hub)) {
+        return "";
+    }
+
+    const org = formatBoardOrganization(board.organization);
+    if (board.shared) {
+        const owner = (board.owner_display_name || "").trim();
+        const label = owner ? `${org} · ${owner}` : org;
+        return `<div class="board-hub-card-head"><span class="board-hub-card-org is-shared-org" title="${escapeHtml(label)}">${escapeHtml(label)}</span></div>`;
+    }
+
+    const isPersonal = org === PERSONAL_BOARD_ORGANIZATION;
+    return `<div class="board-hub-card-head"><span class="board-hub-card-org${isPersonal ? " is-personal-org" : ""}" title="${escapeHtml(org)}">${escapeHtml(org)}</span></div>`;
+}
+
+function shouldShowBoardHubCardOrg() {
+    return true;
+}
+
+function renderBoardHubCard(board, hub = state.boardHub) {
     const sharedBadge = board.shared
         ? `<span class="board-share-badge">${board.share_permissions?.edit ? "可编辑分享" : "只读分享"}</span>`
         : "";
@@ -2966,6 +3238,7 @@ function renderBoardHubCard(board) {
     return `
         <article class="board-hub-card ${board.shared ? "is-shared-board" : ""}" data-board-id="${board.id}"${board.shared ? ` data-owner-tenant-type="${escapeHtml(board.owner_tenant_type || "")}" data-owner-tenant-id="${escapeHtml(board.owner_tenant_id || "")}"` : ""}>
             <h3 class="board-hub-card-title">${escapeHtml(board.title)}${sharedBadge}</h3>
+            ${renderBoardHubCardOrg(board, hub)}
             <div class="board-hub-card-footer">
                 ${hoverActions}
                 <div class="board-hub-card-actions">
@@ -3044,7 +3317,7 @@ function renderBoardListContent() {
                 ${renderBoardHubHeader(hub)}
                 ${sectionTitle ? `<h3 class="board-hub-section-title">${sectionTitle}</h3>` : ""}
                 <div class="board-hub-grid" id="boardGrid">
-                    ${ownBoards.length ? ownBoards.map(renderBoardHubCard).join("") : renderBoardHubEmpty(hub)}
+                    ${ownBoards.length ? ownBoards.map((board) => renderBoardHubCard(board, hub)).join("") : renderBoardHubEmpty(hub)}
                 </div>
             </div>
         </section>
@@ -3149,6 +3422,9 @@ function bindBoardViewTabs() {
 async function openBoard(boardId, cardId = null, ownerTenantType = null, ownerTenantId = null) {
     try {
         const boardMeta = findBoardById(boardId, ownerTenantType, ownerTenantId);
+        if (boardMeta && !boardMeta.shared) {
+            syncBoardHubForOrganization(boardMeta.organization);
+        }
         const query =
             boardMeta?.shared && boardMeta.owner_tenant_type && boardMeta.owner_tenant_id
                 ? `?owner_tenant_type=${encodeURIComponent(boardMeta.owner_tenant_type)}&owner_tenant_id=${encodeURIComponent(boardMeta.owner_tenant_id)}`
@@ -4274,12 +4550,19 @@ async function openBoardForm(boardId = null) {
 }
 
 async function saveBoardForm() {
+    const organization = getBoardOrgValue();
+    if (organization === null) {
+        showError("请输入自定义组织名称");
+        getBoardOrgElements().customInput?.focus();
+        return;
+    }
+
     const payload = {
         title: document.getElementById("boardTitleInput").value.trim(),
         status_id: boardStatusSelect.value,
         start_date: document.getElementById("boardStartInput").value,
         end_date: document.getElementById("boardEndInput").value,
-        organization: normalizeBoardOrganization(getBoardOrgElements().input?.value),
+        organization,
     };
     if (!payload.title) {
         showError("看板名称不能为空");
@@ -4318,6 +4601,7 @@ async function saveBoardForm() {
             return;
         }
         showSuccess("看板已创建");
+        syncBoardHubForOrganization(organization);
         location.hash = `#/board/${result.item.id}`;
     } catch (error) {
         showError(error.message || "保存看板失败");

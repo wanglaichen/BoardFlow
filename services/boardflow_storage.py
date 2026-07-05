@@ -7,7 +7,7 @@ import re
 import threading
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from services.org_keys import (
     PERSONAL_BOARD_ORG_NAME,
@@ -33,6 +33,7 @@ from services.org_keys import (
 from services.storage import DEFAULT_DATA, JsonStorage, RedisStorage, QuickFallbackStorage, _clone_default_data, _normalize_data, _pipeline_hset_mapping
 from services.tenant_keys import (
     SUPER_ADMIN_TENANT_TYPE,
+    USER_NAMESPACE,
     legacy_settings_user_organizations_key,
     legacy_settings_user_shared_boards_key,
     legacy_settings_user_shared_organizations_key,
@@ -755,6 +756,105 @@ class BoardFlowStorage:
             "cards": cards,
             "board_owners": board_owners,
         }
+
+    def iter_clear_all_system_data(self) -> Iterator[dict[str, Any]]:
+        def emit(step: str, message: str, percent: int, *, done: bool = False) -> dict[str, Any]:
+            return {"step": step, "message": message, "percent": max(0, min(100, percent)), "done": done}
+
+        with self._lock:
+            users = self.list_users()
+            user_ids = [str(user.get("id")) for user in users if user.get("id")]
+            total_units = max(len(user_ids) + 4, 1)
+            completed = 0
+
+            yield emit("prepare", f"准备清理，共 {len(user_ids)} 个用户账号", 0)
+
+            for index, user_id in enumerate(user_ids, start=1):
+                username = next(
+                    (user.get("username") or user.get("display_name") for user in users if str(user.get("id")) == user_id),
+                    user_id,
+                )
+                self.delete_user_tenant(user_id)
+                self.delete_user(user_id)
+                completed += 1
+                yield emit(
+                    "users",
+                    f"已清理用户 {username} ({index}/{len(user_ids)})",
+                    int(completed / total_units * 100),
+                )
+
+            completed += 1
+            yield emit("shares", "正在清理分享记录…", int(completed / total_units * 100))
+            if self._is_redis():
+                self._redis().client.delete(orgshare_key(self.key_prefix))
+            else:
+                self._write_json_sidecar("shares.json", [])
+
+            completed += 1
+            yield emit("tenants", "正在清理看板与组织数据…", int(completed / total_units * 100))
+            if self._is_redis():
+                redis = self._redis()
+                for pattern, label in (
+                    (f"{ORG_NAMESPACE}:*", "组织"),
+                    (f"{USER_NAMESPACE}:*", "用户空间"),
+                    (f"{self.settings_key}:user:*", "旧版用户索引"),
+                ):
+                    deleted = 0
+                    batch: list[str] = []
+                    for key in redis.client.scan_iter(match=pattern, count=200):
+                        batch.append(key)
+                        if len(batch) >= 100:
+                            redis.client.delete(*batch)
+                            deleted += len(batch)
+                            batch = []
+                    if batch:
+                        redis.client.delete(*batch)
+                        deleted += len(batch)
+                    if deleted:
+                        yield emit(
+                            "tenants",
+                            f"已删除 {deleted} 个{label} Redis 键",
+                            int(completed / total_units * 100),
+                        )
+                pipeline = redis.client.pipeline()
+                redis._delete_legacy_flat_keys(pipeline)
+                pipeline.execute()
+                redis.client.delete(settings_users_key(self.settings_key))
+            else:
+                tenants_dir = self._json_base_dir() / "tenants"
+                if tenants_dir.exists():
+                    for path in tenants_dir.glob("*.json"):
+                        path.unlink()
+                for pattern in ("user_orgs_*.json", "user_shared_orgs_*.json", "user_shared_boards_*.json", "user_shared_org_index_*.json"):
+                    for path in self._json_base_dir().glob(pattern):
+                        path.unlink()
+                self._write_json_sidecar("users.json", [])
+                if isinstance(self._resolve_backend(), JsonStorage):
+                    self._backend.write(_clone_default_data())
+
+            completed += 1
+            default_settings = copy.deepcopy(DEFAULT_DATA["settings"])
+            yield emit("settings", "正在恢复默认系统设置…", int(completed / total_units * 100))
+            self.write_settings(default_settings)
+
+            super_ctx = {
+                "type": SUPER_ADMIN_TENANT_TYPE,
+                "id": "super_admin",
+                "scope_mode": "org_multi",
+            }
+            empty = _clone_default_data()
+            self.write_tenant(
+                super_ctx,
+                {
+                    "boards": [],
+                    "lists": [],
+                    "cards": [],
+                    "meta": empty["meta"],
+                },
+                default_settings,
+            )
+
+            yield emit("done", "所有系统数据已清理完成", 100, done=True)
 
     @staticmethod
     def _loads_dict(raw: str | None) -> dict[str, Any] | None:

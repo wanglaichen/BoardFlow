@@ -125,14 +125,17 @@
                         </div>
                     </div>
                     <label class="field-label">所属组织</label>
-                    <input
-                        id="boardOrgInput"
-                        class="form-control"
-                        list="boardOrgOptions"
-                        placeholder="选择已有组织，或直接输入新名称"
-                        autocomplete="off"
-                    >
-                    <datalist id="boardOrgOptions"></datalist>
+                    <div class="board-org-combo" id="boardOrgField">
+                        <select id="boardOrgSelect" class="form-select"></select>
+                        <input
+                            id="boardOrgCustomInput"
+                            class="form-control board-org-custom-input"
+                            type="text"
+                            placeholder="输入自定义组织名称"
+                            autocomplete="off"
+                            hidden
+                        >
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <button class="btn btn-outline-secondary" data-bs-dismiss="modal" type="button">取消</button>

@@ -1,4 +1,6 @@
-from flask import Blueprint, jsonify, request, send_file
+import json
+
+from flask import Blueprint, Response, jsonify, request, send_file, stream_with_context
 from io import BytesIO
 
 from services.card_editors import get_editor_config
@@ -375,6 +377,27 @@ def init_api(board_service, auth_service, user_service, share_service):
         except ValueError as error:
             return jsonify({"message": str(error)}), 400
         return jsonify({"message": "数据导入成功", "validation": validation})
+
+    @api_bp.route("/data-transfer/clear-system", methods=["POST"])
+    def clear_system_data():
+        _require_super_admin()
+
+        @stream_with_context
+        def generate():
+            try:
+                for event in board_service.iter_clear_all_system_data():
+                    yield json.dumps(event, ensure_ascii=False) + "\n"
+            except Exception as error:
+                payload = {
+                    "step": "error",
+                    "message": str(error) or "清理失败",
+                    "percent": 0,
+                    "done": True,
+                    "error": True,
+                }
+                yield json.dumps(payload, ensure_ascii=False) + "\n"
+
+        return Response(generate(), mimetype="application/x-ndjson")
 
     return api_bp
 
