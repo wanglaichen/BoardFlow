@@ -64,12 +64,45 @@ def legacy_org_card_detail_key(org_id: str, list_id: str, card_id: str) -> str:
     return f"{org_root(org_id)}:boards:{list_id}:detail:{card_id}"
 
 
-def resolve_org_id(organization: str | None, organizations: list[dict[str, Any]]) -> str:
+def org_creator_key(org: dict[str, Any]) -> tuple[str, str]:
+    from services.tenant_keys import SUPER_ADMIN_ID, SUPER_ADMIN_TENANT_TYPE
+
+    return (
+        str(org.get("created_by_type") or SUPER_ADMIN_TENANT_TYPE),
+        str(org.get("created_by_id") or SUPER_ADMIN_ID),
+    )
+
+
+def organizations_for_creator(
+    organizations: list[dict[str, Any]],
+    *,
+    created_by_type: str | None = None,
+    created_by_id: str | None = None,
+) -> list[dict[str, Any]]:
+    if not created_by_type or not created_by_id:
+        return organizations
+    target = (str(created_by_type), str(created_by_id))
+    scoped = [org for org in organizations if org_creator_key(org) == target]
+    return scoped or organizations
+
+
+def resolve_org_id(
+    organization: str | None,
+    organizations: list[dict[str, Any]],
+    *,
+    created_by_type: str | None = None,
+    created_by_id: str | None = None,
+) -> str:
     name = (organization or "").strip()
     if not name or name == PERSONAL_BOARD_ORG_NAME:
         return PERSONAL_ORG_ID
 
-    for org in organizations:
+    candidates = organizations_for_creator(
+        organizations,
+        created_by_type=created_by_type,
+        created_by_id=created_by_id,
+    )
+    for org in candidates:
         if (org.get("name") or "").strip() == name and org.get("id"):
             return str(org["id"])
 

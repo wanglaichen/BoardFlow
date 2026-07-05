@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BoardFlow 流程看板</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
-    <link rel="stylesheet" href="{{ url_for('static', filename='js/card-description-editor.css') }}?v=20260704l">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}?v=20260704u">
+    <link rel="stylesheet" href="{{ url_for('static', filename='js/card-description-editor.css') }}?v={{ asset_version }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='js/card-markdown-editor.css') }}?v={{ asset_version }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}?v={{ asset_version }}">
 </head>
 <body>
     <div class="app-root">
@@ -20,7 +21,8 @@
                 <div id="searchResults" class="search-results"></div>
             </div>
             <div class="nav-actions">
-                <a class="btn btn-sm btn-outline-light" href="#/settings/statuses">设置</a>
+                <a class="btn btn-sm btn-outline-light d-none" id="navSettingsBtn" href="#/settings/statuses">设置</a>
+                <button class="btn btn-sm btn-outline-light" id="navUserBtn" type="button">用户</button>
                 <span class="edition-badge">超级版</span>
                 <button class="btn btn-sm btn-light" id="createBoardNavBtn" type="button">+</button>
             </div>
@@ -32,7 +34,7 @@
         <main id="appView"></main>
     </div>
 
-    <div class="modal fade" id="cardModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="cardModal" tabindex="-1" aria-hidden="true" data-bs-focus="false">
         <div class="modal-dialog modal-lg modal-dialog-scrollable">
             <div class="modal-content card-modal">
                 <div class="card-modal-header">
@@ -43,40 +45,52 @@
                     <input id="cardTitleInput" class="form-control card-title-input" placeholder="卡片标题">
                 </div>
                 <div class="modal-body">
-                    <div class="description-field-head">
-                        <label class="field-label" for="cardDescriptionModeSelect">描述</label>
-                        <div class="description-mode-picker">
-                            <select id="cardDescriptionModeSelect" class="description-mode-select" aria-label="描述编辑模式">
-                                <option value="richtext">富文本编辑</option>
-                                <option value="markdown">Markdown</option>
-                            </select>
+                    <div class="section-head description-section-head">
+                        <h3>描述</h3>
+                        <div class="description-head-actions">
+                            <button class="btn btn-sm card-section-btn description-action-btn" id="cardDescriptionEditBtn" type="button">编辑</button>
+                            <button class="btn btn-sm card-section-btn description-action-btn is-hidden" id="cardDescriptionViewBtn" type="button" hidden>完成</button>
+                            <div class="description-mode-picker is-hidden" id="cardDescriptionModePicker" hidden>
+                                <select id="cardDescriptionModeSelect" class="description-mode-select" aria-label="描述编辑模式">
+                                    <option value="markdown" selected>Markdown</option>
+                                    <option value="richtext">富文本编辑</option>
+                                </select>
+                            </div>
                         </div>
                     </div>
-                    <div class="card-description-editor-wrap" id="cardDescriptionWrap">
-                        <div id="cardDescriptionRichtextPane" class="card-description-pane">
-                            <div id="cardDescriptionToolbar" class="card-description-toolbar"></div>
-                            <div id="cardDescriptionEditor" class="card-description-editor-host"></div>
+                    <div class="card-description-editor-wrap is-view-mode" id="cardDescriptionWrap">
+                        <div id="cardDescriptionViewPane" class="card-description-pane card-description-view-pane">
+                            <p class="card-description-view-empty text-muted mb-0" id="cardDescriptionViewEmpty">暂无描述，点击「编辑」添加内容</p>
+                            <div id="cardDescriptionViewContent" class="card-description-view-content" hidden></div>
                         </div>
-                        <div id="cardDescriptionMarkdownPane" class="card-description-pane is-hidden" hidden>
-                            <textarea id="cardDescriptionMarkdownInput" class="card-description-markdown-input" placeholder="支持 Markdown：# 标题、**加粗**、- 列表、`代码`、> 引用…" spellcheck="false"></textarea>
-                            <div class="card-description-markdown-preview-bar">实时预览</div>
-                            <div id="cardDescriptionMarkdownPreview" class="card-description-markdown-preview"></div>
+                        <div id="cardDescriptionEditShell" class="card-description-edit-shell is-hidden" hidden>
+                            <div id="cardDescriptionRichtextPane" class="card-description-pane is-hidden" hidden>
+                                <div id="cardDescriptionToolbar" class="card-description-toolbar"></div>
+                                <div id="cardDescriptionEditor" class="card-description-editor-host"></div>
+                            </div>
+                            <div id="cardDescriptionMarkdownPane" class="card-description-pane is-hidden" hidden>
+                                <div id="cardDescriptionMarkdownEditor" class="card-description-markdown-host"></div>
+                            </div>
                         </div>
                     </div>
 
-                    <div class="section-head">
-                        <h3>检查清单</h3>
-                        <button class="btn btn-sm card-section-btn" id="addChecklistItemBtn" type="button">添加项</button>
+                    <div id="cardChecklistSection" class="card-detail-section">
+                        <div class="section-head">
+                            <h3>检查清单</h3>
+                            <button class="btn btn-sm card-section-btn" id="addChecklistItemBtn" type="button">添加项</button>
+                        </div>
+                        <div id="checklistContainer" class="checklist-container"></div>
                     </div>
-                    <div id="checklistContainer" class="checklist-container"></div>
 
-                    <div class="section-head">
-                        <h3>评论</h3>
-                    </div>
-                    <div id="commentsContainer" class="comments-container"></div>
-                    <div class="comment-form">
-                        <input id="commentInput" class="form-control" placeholder="写下评论...">
-                        <button class="btn btn-primary" id="submitCommentBtn" type="button">发送</button>
+                    <div id="cardCommentsSection" class="card-detail-section">
+                        <div class="section-head">
+                            <h3>评论</h3>
+                        </div>
+                        <div id="commentsContainer" class="comments-container"></div>
+                        <div class="comment-form">
+                            <input id="commentInput" class="form-control" placeholder="写下评论...">
+                            <button class="btn btn-primary" id="submitCommentBtn" type="button">发送</button>
+                        </div>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -145,13 +159,177 @@
         </div>
     </div>
 
+    <div class="modal fade" id="userFormModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-sm">
+            <div class="modal-content card-modal">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="userFormTitle">添加用户</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="userFormUsernameWrap" class="mb-3">
+                        <label class="field-label" for="userFormUsernameInput">用户名</label>
+                        <input id="userFormUsernameInput" class="form-control" autocomplete="off" placeholder="登录用户名">
+                    </div>
+                    <div class="mb-3">
+                        <label class="field-label" for="userFormDisplayNameInput">显示名称</label>
+                        <input id="userFormDisplayNameInput" class="form-control" autocomplete="off" placeholder="界面显示名称">
+                    </div>
+                    <div class="mb-3">
+                        <label class="field-label" for="userFormPasswordInput">密码</label>
+                        <input id="userFormPasswordInput" class="form-control" type="password" autocomplete="new-password" placeholder="设置登录密码">
+                    </div>
+                    <div id="userFormPasswordConfirmWrap" class="mb-0">
+                        <label class="field-label" for="userFormPasswordConfirmInput">确认密码</label>
+                        <input id="userFormPasswordConfirmInput" class="form-control" type="password" autocomplete="new-password" placeholder="再次输入密码">
+                    </div>
+                    <label class="password-visibility-option">
+                        <input id="userFormShowPassword" type="checkbox">
+                        <span>显示密码</span>
+                    </label>
+                    <p id="userFormPasswordHint" class="user-form-hint d-none">留空表示不修改密码。</p>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-outline-secondary" data-bs-dismiss="modal" type="button">取消</button>
+                    <button class="btn btn-primary" id="saveUserFormBtn" type="button">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="listSettingsModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-sm">
+            <div class="modal-content card-modal">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="listSettingsTitle">列表设置</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="list-settings-section">
+                        <label class="field-label" for="listSettingsTitleInput">列表名称</label>
+                        <input id="listSettingsTitleInput" class="form-control" maxlength="120" placeholder="输入列表名称">
+                    </div>
+
+                    <div class="list-settings-section">
+                        <p class="field-label mb-2">卡片详情显示</p>
+                        <label class="list-settings-option">
+                            <input id="listSettingsShowChecklist" type="checkbox" checked>
+                            <span>显示「检查清单」区域</span>
+                        </label>
+                        <label class="list-settings-option">
+                            <input id="listSettingsShowComments" type="checkbox" checked>
+                            <span>显示「评论」区域</span>
+                        </label>
+                    </div>
+
+                    <div class="list-settings-section list-settings-danger-zone">
+                        <p class="field-label mb-2">危险操作</p>
+                        <button class="btn btn-outline-danger w-100" id="deleteListFromSettingsBtn" type="button">删除此列表</button>
+                        <p class="list-settings-danger-hint">删除前需完成算式验证，此操作不可撤销。</p>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-outline-secondary" data-bs-dismiss="modal" type="button">取消</button>
+                    <button class="btn btn-primary" id="saveListSettingsBtn" type="button">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="loginModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content card-modal">
+                <div class="modal-header">
+                    <h5 class="modal-title">登录 BoardFlow</h5>
+                    <button type="button" class="btn-close d-none" id="loginModalCloseBtn" aria-label="关闭"></button>
+                </div>
+                <div class="modal-body">
+                    <label class="field-label" for="loginUsernameInput">用户名</label>
+                    <input id="loginUsernameInput" class="form-control mb-3" autocomplete="username">
+                    <label class="field-label" for="loginPasswordInput">密码</label>
+                    <input id="loginPasswordInput" class="form-control" type="password" autocomplete="current-password">
+                    <label class="password-visibility-option">
+                        <input id="loginShowPassword" type="checkbox">
+                        <span>显示密码</span>
+                    </label>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-primary" id="loginSubmitBtn" type="button">登录</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="userPanelModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content card-modal">
+                <div class="modal-header">
+                    <h5 class="modal-title">用户中心</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="mb-2">当前用户：<strong id="userPanelCurrentName"></strong></p>
+                    <div class="user-panel-section">
+                        <div class="section-head">
+                            <h3>好友</h3>
+                        </div>
+                        <div class="user-friend-form">
+                            <input id="friendSearchInput" class="form-control" placeholder="搜索用户名添加好友">
+                            <button class="btn btn-sm btn-primary" id="addFriendBtn" type="button">添加</button>
+                        </div>
+                        <div id="friendsList" class="friends-list"></div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-outline-secondary" id="switchUserBtn" type="button">切换账号</button>
+                    <button class="btn btn-outline-danger" id="logoutBtn" type="button">退出登录</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="boardShareModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content card-modal">
+                <div class="modal-header">
+                    <h5 class="modal-title">分享看板</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <label class="field-label" for="shareFriendSelect">选择好友</label>
+                    <select id="shareFriendSelect" class="form-select mb-3"></select>
+                    <label class="list-settings-option">
+                        <input id="sharePermissionView" type="checkbox" checked disabled>
+                        <span>可查看</span>
+                    </label>
+                    <label class="list-settings-option">
+                        <input id="sharePermissionEdit" type="checkbox">
+                        <span>可修改</span>
+                    </label>
+                    <div id="existingSharesList" class="existing-shares-list"></div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-outline-secondary" data-bs-dismiss="modal" type="button">取消</button>
+                    <button class="btn btn-primary" id="saveBoardShareBtn" type="button">保存分享</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="modal fade" id="confirmDeleteModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered">
-            <div class="modal-content confirm-danger-modal">
+            <div class="modal-content card-modal confirm-danger-modal">
                 <div class="modal-body confirm-danger-body">
                     <div class="confirm-danger-icon" aria-hidden="true">!</div>
                     <h5 class="confirm-danger-title" id="confirmDeleteTitle">确认删除</h5>
                     <p class="confirm-danger-message" id="confirmDeleteMessage"></p>
+                    <div id="confirmDeleteConfirmWrap" class="confirm-delete-confirm-wrap" hidden>
+                        <p class="confirm-delete-phrase-hint">请计算下方算式以确认删除：</p>
+                        <div class="confirm-delete-math-row">
+                            <span id="confirmDeleteMathQuestion" class="confirm-delete-math-question"></span>
+                            <input id="confirmDeleteConfirmInput" class="form-control confirm-delete-math-input" type="text" inputmode="numeric" autocomplete="off" placeholder="答案">
+                        </div>
+                    </div>
                     <p class="confirm-danger-hint">此操作无法撤销，请仔细确认后再继续。</p>
                 </div>
                 <div class="modal-footer confirm-danger-footer">
@@ -164,8 +342,9 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
-    <script src="{{ url_for('static', filename='js/card-description-editor.js') }}?v=20260704l"></script>
-    <script src="{{ url_for('static', filename='js/card-editors.js') }}?v=20260704i"></script>
-    <script src="{{ url_for('static', filename='js/main.js') }}?v=20260704u"></script>
+    <script src="{{ url_for('static', filename='js/card-description-editor.js') }}?v={{ asset_version }}"></script>
+    <script src="{{ url_for('static', filename='js/card-markdown-editor.js') }}?v={{ asset_version }}"></script>
+    <script src="{{ url_for('static', filename='js/card-editors.js') }}?v={{ asset_version }}"></script>
+    <script src="{{ url_for('static', filename='js/main.js') }}?v={{ asset_version }}"></script>
 </body>
 </html>

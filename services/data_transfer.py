@@ -9,11 +9,12 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from services.org_keys import PERSONAL_BOARD_ORG_NAME, resolve_org_id
+from services.org_keys import PERSONAL_BOARD_ORG_NAME, PERSONAL_ORG_ID, resolve_org_id
 from services.storage import DEFAULT_DATA
 
 PACKAGE_FORMAT = "boardflow-package"
-PACKAGE_VERSION = 1
+PACKAGE_VERSION = 2
+PACKAGE_VERSION_LEGACY = 1
 PACKAGE_MAGIC = "BFLOW1"
 
 CARD_DETAIL_KEYS = ("comments", "checklist", "canvas_data", "mindmap_data", "table_data", "description_data")
@@ -37,18 +38,40 @@ def _slug_filename(value: str, fallback: str = "export") -> str:
     return slug[:48] or fallback
 
 
-def build_package(kind: str, payload: dict[str, Any], meta: dict[str, Any] | None = None) -> dict[str, Any]:
+def build_package(
+    kind: str,
+    payload: dict[str, Any],
+    meta: dict[str, Any] | None = None,
+    *,
+    version: int = PACKAGE_VERSION,
+) -> dict[str, Any]:
     checksum = _build_checksum(payload)
     return {
         "magic": PACKAGE_MAGIC,
         "format": PACKAGE_FORMAT,
-        "version": PACKAGE_VERSION,
+        "version": version,
         "kind": kind,
         "exported_at": _now_iso(),
         "checksum": checksum,
         "meta": meta or {},
         "payload": payload,
     }
+
+
+def _is_v2_system_payload(payload: dict[str, Any]) -> bool:
+    return isinstance(payload, dict) and (
+        "super_admin_tenant" in payload or "users" in payload or "shares" in payload
+    )
+
+
+def _validate_tenant_bundle(
+    boards: list[dict[str, Any]],
+    lists: list[dict[str, Any]],
+    cards: list[dict[str, Any]],
+    *,
+    prefix: str = "",
+) -> tuple[list[str], list[str]]:
+    return _validate_refs(boards, lists, cards, prefix=prefix)
 
 
 def serialize_package(package: dict[str, Any]) -> bytes:
@@ -137,7 +160,7 @@ def validate_package(package: dict[str, Any], *, expected_kind: str | None = Non
     if package.get("format") != PACKAGE_FORMAT:
         errors.append(f"不支持的 format：{package.get('format')}")
     version = package.get("version")
-    if version != PACKAGE_VERSION:
+    if version not in (PACKAGE_VERSION, PACKAGE_VERSION_LEGACY):
         errors.append(f"不支持的数据包版本：{version}")
     kind = package.get("kind")
     if kind not in ("system", "organization", "board"):
@@ -156,32 +179,98 @@ def validate_package(package: dict[str, Any], *, expected_kind: str | None = Non
         errors.append("校验和失败，文件可能已损坏或被篡改")
 
     if kind == "system":
-        boards = payload.get("boards") if isinstance(payload.get("boards"), list) else None
-        lists = payload.get("lists") if isinstance(payload.get("lists"), list) else None
-        cards = payload.get("cards") if isinstance(payload.get("cards"), list) else None
-        settings = payload.get("settings")
-        if boards is None:
-            errors.append("系统包缺少 boards 数组")
-            boards = []
-        if lists is None:
-            errors.append("系统包缺少 lists 数组")
-            lists = []
-        if cards is None:
-            errors.append("系统包缺少 cards 数组")
-            cards = []
-        if not isinstance(settings, dict):
-            errors.append("系统包缺少 settings 对象")
-        ref_errors, ref_warnings = _validate_refs(boards, lists, cards)
-        errors.extend(ref_errors)
-        warnings.extend(ref_warnings)
-        summary = {
-            "boards": len(boards),
-            "lists": len(lists),
-            "cards": len(cards),
-            "organizations": len((settings or {}).get("organizations") or []) if isinstance(settings, dict) else 0,
-            "card_types": len((settings or {}).get("card_types") or []) if isinstance(settings, dict) else 0,
-            "board_statuses": len((settings or {}).get("board_statuses") or []) if isinstance(settings, dict) else 0,
-        }
+        if _is_v2_system_payload(payload):
+            settings = payload.get("settings")
+            super_tenant = payload.get("super_admin_tenant") or {}
+            users = payload.get("users") if isinstance(payload.get("users"), list) else None
+            shares = payload.get("shares") if isinstance(payload.get("shares"), list) else None
+            if not isinstance(settings, dict):
+                errors.append("系统包缺少 settings 对象")
+            if not isinstance(super_tenant, dict):
+                errors.append("系统包缺少 super_admin_tenant 对象")
+            if users is None:
+                errors.append("系统包缺少 users 数组")
+                users = []
+            if shares is None:
+                errors.append("系统包缺少 shares 数组")
+                shares = []
+            super_boards = super_tenant.get("boards") if isinstance(super_tenant.get("boards"), list) else []
+            super_lists = super_tenant.get("lists") if isinstance(super_tenant.get("lists"), list) else []
+            super_cards = super_tenant.get("cards") if isinstance(super_tenant.get("cards"), list) else []
+            ref_errors, ref_warnings = _validate_tenant_bundle(super_boards, super_lists, super_cards, prefix="[超管] ")
+            errors.extend(ref_errors)
+            warnings.extend(ref_warnings)
+            user_board_total = 0
+            for index, entry in enumerate(users):
+                if not isinstance(entry, dict):
+                    errors.append(f"users[{index}] 必须是对象")
+                    continue
+                profile = entry.get("profile")
+                tenant = entry.get("tenant")
+                if not isinstance(profile, dict):
+                    errors.append(f"users[{index}] 缺少 profile")
+                elif not profile.get("id"):
+                    errors.append(f"users[{index}] 缺少用户 id")
+                if not isinstance(tenant, dict):
+                    errors.append(f"users[{index}] 缺少 tenant")
+                    continue
+                boards = tenant.get("boards") if isinstance(tenant.get("boards"), list) else []
+                lists = tenant.get("lists") if isinstance(tenant.get("lists"), list) else []
+                cards = tenant.get("cards") if isinstance(tenant.get("cards"), list) else []
+                user_board_total += len(boards)
+                label = (profile or {}).get("username") or (profile or {}).get("id") or str(index)
+                u_errors, u_warnings = _validate_tenant_bundle(
+                    boards, lists, cards, prefix=f"[用户:{label}] "
+                )
+                errors.extend(u_errors)
+                warnings.extend(u_warnings)
+            summary = {
+                "boards": len(super_boards) + user_board_total,
+                "lists": len(super_lists) + sum(
+                    len((entry.get("tenant") or {}).get("lists") or [])
+                    for entry in users
+                    if isinstance(entry, dict)
+                ),
+                "cards": len(super_cards) + sum(
+                    len((entry.get("tenant") or {}).get("cards") or [])
+                    for entry in users
+                    if isinstance(entry, dict)
+                ),
+                "organizations": len((settings or {}).get("organizations") or []) if isinstance(settings, dict) else 0,
+                "users": len(users),
+                "shares": len(shares),
+                "card_types": len((settings or {}).get("card_types") or []) if isinstance(settings, dict) else 0,
+                "board_statuses": len((settings or {}).get("board_statuses") or []) if isinstance(settings, dict) else 0,
+            }
+        else:
+            boards = payload.get("boards") if isinstance(payload.get("boards"), list) else None
+            lists = payload.get("lists") if isinstance(payload.get("lists"), list) else None
+            cards = payload.get("cards") if isinstance(payload.get("cards"), list) else None
+            settings = payload.get("settings")
+            if boards is None:
+                errors.append("系统包缺少 boards 数组")
+                boards = []
+            if lists is None:
+                errors.append("系统包缺少 lists 数组")
+                lists = []
+            if cards is None:
+                errors.append("系统包缺少 cards 数组")
+                cards = []
+            if not isinstance(settings, dict):
+                errors.append("系统包缺少 settings 对象")
+            ref_errors, ref_warnings = _validate_refs(boards, lists, cards)
+            errors.extend(ref_errors)
+            warnings.extend(ref_warnings)
+            warnings.append("检测到旧版系统包（仅含超管扁平数据），导入时将只恢复超管看板")
+            summary = {
+                "boards": len(boards),
+                "lists": len(lists),
+                "cards": len(cards),
+                "organizations": len((settings or {}).get("organizations") or []) if isinstance(settings, dict) else 0,
+                "card_types": len((settings or {}).get("card_types") or []) if isinstance(settings, dict) else 0,
+                "board_statuses": len((settings or {}).get("board_statuses") or []) if isinstance(settings, dict) else 0,
+                "legacy": True,
+            }
 
     elif kind == "organization":
         organization = payload.get("organization")
@@ -204,12 +293,18 @@ def validate_package(package: dict[str, Any], *, expected_kind: str | None = Non
         ref_errors, ref_warnings = _validate_refs(boards, lists, cards)
         errors.extend(ref_errors)
         warnings.extend(ref_warnings)
+        board_owners = payload.get("board_owners") if isinstance(payload.get("board_owners"), dict) else {}
         summary = {
             "organization": (organization or {}).get("name") if isinstance(organization, dict) else "",
             "boards": len(boards),
             "lists": len(lists),
             "cards": len(cards),
+            "tenants": len({(v.get("type"), v.get("id")) for v in board_owners.values() if isinstance(v, dict)})
+            if board_owners
+            else 1,
         }
+        if board_owners:
+            summary["board_owners"] = len(board_owners)
 
     elif kind == "board":
         board = payload.get("board")
@@ -261,14 +356,8 @@ def _validation_result(
     }
 
 
-def export_system(data: dict[str, Any]) -> tuple[bytes, str]:
-    payload = {
-        "boards": copy.deepcopy(data.get("boards") or []),
-        "lists": copy.deepcopy(data.get("lists") or []),
-        "cards": copy.deepcopy(data.get("cards") or []),
-        "meta": copy.deepcopy(data.get("meta") or {}),
-        "settings": copy.deepcopy(data.get("settings") or DEFAULT_DATA["settings"]),
-    }
+def export_system(storage) -> tuple[bytes, str]:
+    payload = storage.export_full_snapshot()
     package = build_package(
         "system",
         payload,
@@ -276,11 +365,136 @@ def export_system(data: dict[str, Any]) -> tuple[bytes, str]:
             "label": "BoardFlow 全系统备份",
             "scope": "system",
             "includes_settings": True,
+            "includes_users": True,
+            "includes_shares": True,
             "settings_keys": ["card_types", "board_statuses", "organizations", "editable_fonts"],
         },
+        version=PACKAGE_VERSION,
     )
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     return serialize_package(package), f"boardflow-system-{stamp}.dat"
+
+
+def import_system_snapshot(storage, package: dict[str, Any], *, share_service=None) -> None:
+    payload = package.get("payload") or {}
+    if not _is_v2_system_payload(payload):
+        raise ValueError("不是新版全量系统包")
+    storage.import_full_snapshot(payload)
+    if share_service:
+        for user in storage.list_users():
+            user_id = str(user.get("id") or "")
+            if user_id:
+                share_service.sync_grantee_share_index(user_id)
+
+
+def import_organization_snapshot(
+    storage,
+    package: dict[str, Any],
+    *,
+    mode: str = "merge",
+    share_service=None,
+    owner_type: str | None = None,
+    owner_id: str | None = None,
+) -> None:
+    payload = package.get("payload") or {}
+    organization = copy.deepcopy(payload.get("organization") or {})
+    boards = copy.deepcopy(payload.get("boards") or [])
+    lists = copy.deepcopy(payload.get("lists") or [])
+    cards = copy.deepcopy(payload.get("cards") or [])
+    board_owners = copy.deepcopy(payload.get("board_owners") or {})
+    org_id = str(organization.get("id") or "")
+    org_name = (organization.get("name") or "").strip()
+
+    settings = copy.deepcopy(storage.read_settings())
+    orgs = settings.setdefault("organizations", [])
+    if org_name and org_name != PERSONAL_BOARD_ORG_NAME:
+        existing = next(
+            (item for item in orgs if str(item.get("id")) == org_id or (item.get("name") or "").strip() == org_name),
+            None,
+        )
+        if existing:
+            existing.update({key: value for key, value in organization.items() if key != "id"})
+        else:
+            orgs.append(organization)
+    storage.write_settings(settings)
+
+    from services.tenant_keys import SUPER_ADMIN_TENANT_TYPE, user_scope_root
+
+    if owner_type and owner_id:
+        for board_id, owner in board_owners.items():
+            if not isinstance(owner, dict):
+                continue
+            if str(owner.get("type")) != str(owner_type) or str(owner.get("id")) != str(owner_id):
+                raise PermissionError(f"无权导入看板 {board_id}：归属不匹配")
+
+    grouped: dict[tuple[str, str], set[str]] = {}
+    for board in boards:
+        board_id = str(board.get("id") or "")
+        if not board_id:
+            continue
+        owner = board_owners.get(board_id) or {"type": SUPER_ADMIN_TENANT_TYPE, "id": "super_admin"}
+        key = (str(owner.get("type") or SUPER_ADMIN_TENANT_TYPE), str(owner.get("id") or "super_admin"))
+        grouped.setdefault(key, set()).add(board_id)
+
+    if not grouped:
+        default_owner = (owner_type, owner_id) if owner_type and owner_id else (SUPER_ADMIN_TENANT_TYPE, "super_admin")
+        grouped[default_owner] = {str(board.get("id")) for board in boards if board.get("id")}
+
+    for (tenant_type, tenant_id), board_ids in grouped.items():
+        if tenant_type == SUPER_ADMIN_TENANT_TYPE:
+            tenant_ctx = {"type": SUPER_ADMIN_TENANT_TYPE, "id": "super_admin", "scope_mode": "org_multi"}
+        else:
+            tenant_ctx = {
+                "type": "user",
+                "id": tenant_id,
+                "scope_mode": "user_single",
+                "scope_root": user_scope_root(tenant_id),
+            }
+
+        tenant_data = copy.deepcopy(storage.read_tenant(tenant_ctx, settings))
+        tenant_data["settings"] = settings
+        subset_boards = [item for item in boards if str(item.get("id")) in board_ids]
+        subset_lists = [item for item in lists if str(item.get("board_id")) in board_ids]
+        subset_cards = [item for item in cards if str(item.get("board_id")) in board_ids]
+
+        if mode == "replace":
+            remove_ids = _collect_org_board_ids(tenant_data, org_id, org_name)
+            tenant_data["boards"] = [
+                item for item in tenant_data.get("boards") or [] if str(item.get("id")) not in remove_ids
+            ]
+            tenant_data["lists"] = [
+                item for item in tenant_data.get("lists") or [] if str(item.get("board_id")) not in remove_ids
+            ]
+            tenant_data["cards"] = [
+                item for item in tenant_data.get("cards") or [] if str(item.get("board_id")) not in remove_ids
+            ]
+            subset_boards, subset_lists, subset_cards = _remap_entities(
+                subset_boards, subset_lists, subset_cards, tenant_data
+            )
+        else:
+            subset_boards, subset_lists, subset_cards = _remap_entities(
+                subset_boards, subset_lists, subset_cards, tenant_data
+            )
+
+        tenant_data.setdefault("boards", []).extend(subset_boards)
+        tenant_data.setdefault("lists", []).extend(subset_lists)
+        tenant_data.setdefault("cards", []).extend(subset_cards)
+        storage.write_tenant(
+            tenant_ctx,
+            {
+                "boards": tenant_data.get("boards") or [],
+                "lists": tenant_data.get("lists") or [],
+                "cards": tenant_data.get("cards") or [],
+                "meta": tenant_data.get("meta") or {},
+            },
+            settings,
+        )
+
+    if share_service:
+        for user in storage.list_users():
+            user_id = str(user.get("id") or "")
+            if user_id:
+                share_service.sync_grantee_share_index(user_id)
 
 
 def _collect_org_board_ids(data: dict[str, Any], org_id: str, org_name: str) -> set[str]:
@@ -297,13 +511,61 @@ def _collect_org_board_ids(data: dict[str, Any], org_id: str, org_name: str) -> 
     return board_ids
 
 
-def export_organization(data: dict[str, Any], org_id: str) -> tuple[bytes, str]:
+def export_organization(
+    storage,
+    org_id: str,
+    *,
+    owner_type: str | None = None,
+    owner_id: str | None = None,
+) -> tuple[bytes, str]:
+    if hasattr(storage, "export_organization_bundle"):
+        bundle = storage.export_organization_bundle(
+            org_id,
+            owner_type=owner_type,
+            owner_id=owner_id,
+        )
+        organization = bundle.get("organization") or {}
+        boards = bundle.get("boards") or []
+        lists = bundle.get("lists") or []
+        cards = bundle.get("cards") or []
+        board_owners = bundle.get("board_owners") or {}
+    else:
+        organization = None
+        boards = lists = cards = []
+        board_owners = {}
+        raise ValueError("存储后端不支持组织导出")
+
+    org_name = (organization or {}).get("name") or ""
+    payload = {
+        "organization": copy.deepcopy(organization or {"id": org_id, "name": org_name or org_id, "note": ""}),
+        "boards": copy.deepcopy(boards),
+        "lists": copy.deepcopy(lists),
+        "cards": copy.deepcopy(cards),
+        "board_owners": copy.deepcopy(board_owners),
+    }
+    package = build_package(
+        "organization",
+        payload,
+        {
+            "label": f"组织导出：{org_name or org_id}",
+            "organization_id": org_id,
+            "organization_name": org_name,
+            "includes_board_owners": bool(board_owners),
+        },
+        version=PACKAGE_VERSION,
+    )
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    filename = f"boardflow-org-{_slug_filename(org_name, org_id)}-{stamp}.dat"
+    return serialize_package(package), filename
+
+
+def _export_organization_legacy(data: dict[str, Any], org_id: str) -> tuple[bytes, str]:
     settings = data.get("settings") or {}
     organizations = settings.get("organizations") or []
     organization = next((item for item in organizations if str(item.get("id")) == org_id), None)
     org_name = (organization or {}).get("name") or ""
-    if not organization and org_id == "org_0":
-        organization = {"id": "org_0", "name": PERSONAL_BOARD_ORG_NAME, "note": "内置个人看板组织"}
+    if not organization and org_id == PERSONAL_ORG_ID:
+        organization = {"id": PERSONAL_ORG_ID, "name": PERSONAL_BOARD_ORG_NAME, "note": "内置个人看板组织"}
         org_name = PERSONAL_BOARD_ORG_NAME
 
     board_ids = _collect_org_board_ids(data, org_id, org_name)
@@ -325,6 +587,7 @@ def export_organization(data: dict[str, Any], org_id: str) -> tuple[bytes, str]:
             "organization_id": org_id,
             "organization_name": org_name,
         },
+        version=PACKAGE_VERSION_LEGACY,
     )
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     filename = f"boardflow-org-{_slug_filename(org_name, org_id)}-{stamp}.dat"
@@ -461,6 +724,8 @@ def apply_import(data: dict[str, Any], package: dict[str, Any], *, mode: str = "
     if kind == "system":
         if mode != "replace":
             raise ValueError("系统导入仅支持 replace 模式（全量覆盖）")
+        if _is_v2_system_payload(payload):
+            raise ValueError("新版系统包请使用 import_system_snapshot 导入")
         normalized = {
             "boards": copy.deepcopy(payload.get("boards") or []),
             "lists": copy.deepcopy(payload.get("lists") or []),
@@ -471,6 +736,8 @@ def apply_import(data: dict[str, Any], package: dict[str, Any], *, mode: str = "
         return normalized
 
     if kind == "organization":
+        if payload.get("board_owners"):
+            raise ValueError("新版组织包请使用 import_organization_snapshot 导入")
         organization = copy.deepcopy(payload.get("organization") or {})
         org_name = (organization.get("name") or "").strip()
         org_id = str(organization.get("id") or "")

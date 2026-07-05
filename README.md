@@ -144,20 +144,48 @@ Redis 环境变量：
 ```text
 STORAGE_BACKEND=redis
 REDIS_URL=redis://...
-REDIS_KEY_PREFIX=jjob:boardflow:state
+REDIS_KEY_PREFIX=jjob:boardflow
 REDIS_SETTINGS_KEY=jjob:boardflow:settings
 REDIS_TIMEOUT_SECONDS=5
 ```
 
-Redis 键结构（`REDIS_KEY_PREFIX` 默认为 `jjob:boardflow:state`）：
+Redis 键结构（`REDIS_KEY_PREFIX` 默认为 `jjob:boardflow`，组织数据命名空间固定为 `jjob:boardflow:org`）：
 
 | Redis 键 | 类型 | 内容 |
 | --- | --- | --- |
-| `{prefix}:boards` | Hash | field=看板 ID，value=看板 JSON |
-| `{prefix}:lists` | Hash | field=列表 ID，value=列表 JSON |
-| `{prefix}:cards` | Hash | field=卡片 ID，value=卡片 JSON |
-| `{prefix}:meta` | Hash | 自增 ID 等元数据 |
-| `REDIS_SETTINGS_KEY` | String | 卡片类型、看板状态等配置 JSON |
+| `{prefix}:state` | String | 旧版整包状态，仅读取迁移兼容 |
+| `jjob:boardflow:org:<org_id>:boards` | Hash | field=看板 ID，value=看板 JSON |
+| `jjob:boardflow:org:<org_id>:boards:<board_id>:lists` | Hash | field=列表 ID，value=列表 JSON |
+| `jjob:boardflow:org:<org_id>:boards:<board_id>:lists:<list_id>:cards` | Hash | field=卡片 ID，value=卡片核心 JSON |
+| `jjob:boardflow:org:<org_id>:boards:<board_id>:lists:<list_id>:state` | Hash | field=卡片 ID，value=卡片排序/状态 JSON |
+| `jjob:boardflow:org:<org_id>:boards:<board_id>:lists:<list_id>:detail:<card_id>` | String | 卡片详情 JSON |
+| `jjob:boardflow:org:<org_id>:meta` | Hash | 自增 ID 等元数据 |
+| `{REDIS_SETTINGS_KEY}:card_types` | Hash | 卡片类型配置 |
+| `{REDIS_SETTINGS_KEY}:board_statuses` | Hash | 看板状态配置 |
+| `{REDIS_SETTINGS_KEY}:organizations` | Hash | 组织配置 |
+| `{REDIS_SETTINGS_KEY}:editable_fonts` | Hash | 可编辑字体配置 |
+| `{REDIS_SETTINGS_KEY}:users` | Hash | 普通用户账号（超级管理员不在此表） |
+| `{prefix}:orgshare` | Hash | 看板分享记录（谁分享给谁） |
+| `jjob:boardflow:user:<user_id>:boards` 等 | Hash | 用户**自建**看板数据 |
+| `jjob:boardflow:user:<user_id>:shared_boards` | Hash | 分享看板快速索引（逐看板，含 organization_id） |
+| `jjob:boardflow:user:<user_id>:shared_org_index` | Hash | 分享看板按组织分组的快速索引 |
+
+## 多用户登录
+
+在 `.env` 中配置超级管理员：
+
+```text
+SUPER_ADMIN_USERNAME=admin
+SUPER_ADMIN_PASSWORD=your-strong-password
+```
+
+- 所有 API 需登录（`/api/auth/login` 除外）
+- 超级管理员：看板数据在 `jjob:boardflow:org:*`，可在「设置 → 用户管理」创建普通用户
+- 普通用户：看板数据在 `jjob:boardflow:user:{user_id}:*`
+- 全局 settings（卡片类型/状态/字体/组织）仅超级管理员可修改，所有用户只读共用
+- 顶栏「用户」：登录/切换账号、好友、退出
+- 看板页「分享」：向好友分享看板（可查看 / 可修改）
+- Hub 列表分区：「我的看板」「分享给我」
 
 配置了 `REDIS_URL` 时，若 Redis 暂时不可用会自动回退到本地 `data/boards.json`。
 
@@ -171,7 +199,7 @@ Redis 键结构（`REDIS_KEY_PREFIX` 默认为 `jjob:boardflow:state`）：
 
 ```text
 REDIS_URL
-REDIS_KEY_PREFIX=jjob:boardflow:state
+REDIS_KEY_PREFIX=jjob:boardflow
 REDIS_SETTINGS_KEY=jjob:boardflow:settings
 VERCEL_TOKEN
 VERCEL_ORG_ID

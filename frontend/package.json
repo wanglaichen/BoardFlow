@@ -6,10 +6,11 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspace @boardflow/app-canvas --workspace @boardflow/app-mindmap --workspace @boardflow/app-table --workspace @boardflow/app-description",
+    "build": "npm run build --workspace @boardflow/app-canvas --workspace @boardflow/app-mindmap --workspace @boardflow/app-table --workspace @boardflow/app-description --workspace @boardflow/app-markdown",
     "build:canvas": "npm run build --workspace @boardflow/app-canvas",
     "build:mindmap": "npm run build --workspace @boardflow/app-mindmap",
     "build:table": "npm run build --workspace @boardflow/app-table",
-    "build:description": "npm run build --workspace @boardflow/app-description"
+    "build:description": "npm run build --workspace @boardflow/app-description",
+    "build:markdown": "npm run build --workspace @boardflow/app-markdown"
   }
 }

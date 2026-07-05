@@ -1,0 +1,153 @@
+.card-description-markdown-host {
+    min-height: 260px;
+}
+
+.card-description-markdown-host .toastui-editor-defaultUI {
+    border: none;
+    border-radius: 0;
+}
+
+.card-description-markdown-host .toastui-editor-defaultUI-toolbar {
+    background: var(--bg-elevated, #1f2229);
+    border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.1));
+}
+
+.card-description-markdown-host .toastui-editor-md-container .toastui-editor,
+.card-description-markdown-host .toastui-editor-md-container .ProseMirror,
+.card-description-markdown-host .toastui-editor-md-container .toastui-editor-contents {
+    background: var(--bg-elevated, #1f2229);
+    color: #ffffff;
+}
+
+.card-description-markdown-host .toastui-editor-md-container .ProseMirror {
+    min-height: 220px;
+    padding: 16px 25px;
+    box-sizing: border-box;
+}
+
+.card-description-markdown-host .toastui-editor-md-preview,
+.card-description-markdown-host .toastui-editor-contents {
+    background: var(--bg-elevated, #1f2229);
+    color: #ffffff;
+}
+
+.card-description-markdown-host .toastui-editor-md-splitter {
+    background: var(--line, rgba(255, 255, 255, 0.1));
+}
+
+.card-description-markdown-host .ProseMirror,
+.card-description-markdown-host .toastui-editor-contents p,
+.card-description-markdown-host .toastui-editor-contents li,
+.card-description-markdown-host .toastui-editor-contents h1,
+.card-description-markdown-host .toastui-editor-contents h2,
+.card-description-markdown-host .toastui-editor-contents h3,
+.card-description-markdown-host .toastui-editor-contents h4,
+.card-description-markdown-host .toastui-editor-contents h5,
+.card-description-markdown-host .toastui-editor-contents h6 {
+    color: #ffffff;
+}
+
+.card-description-markdown-host .toastui-editor-md-tab-container,
+.card-description-markdown-host .toastui-editor-mode-switch {
+    display: none;
+}
+
+.card-description-markdown-host .toastui-editor-defaultUI,
+.card-description-markdown-host .toastui-editor-main,
+.card-description-markdown-host .toastui-editor-md-container,
+.card-description-markdown-host .toastui-editor-md-container .toastui-editor,
+.card-description-markdown-host .toastui-editor-main-container,
+.card-description-markdown-host .toastui-editor-md-preview,
+.card-description-markdown-host .ProseMirror,
+.card-description-markdown-host .toastui-editor-contents {
+    cursor: text;
+}
+
+.card-description-markdown-host .toastui-editor-defaultUI-toolbar,
+.card-description-markdown-host .toastui-editor-toolbar-icons,
+.card-description-markdown-host button {
+    cursor: pointer;
+}
+
+.card-description-markdown-host .toastui-editor-md-splitter {
+    cursor: col-resize;
+}
+
+.card-description-markdown-host .toastui-editor-pseudo-clipboard {
+    pointer-events: none !important;
+    position: fixed !important;
+    left: -9999px !important;
+    top: -9999px !important;
+    width: 0 !important;
+    height: 0 !important;
+    opacity: 0 !important;
+}
+
+.card-description-markdown-host .ProseMirror > div[class*="line-background"] {
+    background-color: transparent !important;
+}
+
+.card-description-markdown-host
+    .ProseMirror
+    > div.toastui-editor-md-code-block-line-background:has(.toastui-editor-md-meta),
+.card-description-markdown-host
+    .ProseMirror
+    > div.toastui-editor-md-code-block-line-background:has(.toastui-editor-md-code),
+.card-description-markdown-host
+    .ProseMirror
+    > div.toastui-editor-md-custom-block-line-background:has(.toastui-editor-md-custom-block) {
+    background-color: rgba(255, 255, 255, 0.06) !important;
+}
+
+.card-description-markdown-host .ProseMirror .placeholder {
+    color: rgba(255, 255, 255, 0.42) !important;
+    pointer-events: none !important;
+    cursor: text !important;
+    background: transparent !important;
+    position: absolute;
+    left: 25px;
+    right: 25px;
+    top: 16px;
+    line-height: 1.6;
+    user-select: none;
+}
+
+.card-description-markdown-host .toastui-editor-contents-placeholder::before {
+    color: rgba(255, 255, 255, 0.42);
+    pointer-events: none;
+}
+
+.card-description-markdown-host .toastui-editor-md-preview,
+.card-description-markdown-host .toastui-editor-md-preview .toastui-editor-contents {
+    cursor: default;
+}
+
+.card-description-markdown-host .ProseMirror.toastui-editor-contents {
+    caret-color: #ffffff;
+}
+
+.card-description-markdown-view.toastui-editor-contents,
+.card-description-markdown-view .toastui-editor-contents {
+    background: transparent;
+    color: #ffffff;
+    padding: 0;
+    min-height: 0;
+}
+
+.card-description-markdown-view .toastui-editor-contents p,
+.card-description-markdown-view .toastui-editor-contents li,
+.card-description-markdown-view .toastui-editor-contents h1,
+.card-description-markdown-view .toastui-editor-contents h2,
+.card-description-markdown-view .toastui-editor-contents h3,
+.card-description-markdown-view .toastui-editor-contents h4,
+.card-description-markdown-view .toastui-editor-contents h5,
+.card-description-markdown-view .toastui-editor-contents h6,
+.card-description-markdown-view .toastui-editor-contents blockquote,
+.card-description-markdown-view .toastui-editor-contents code,
+.card-description-markdown-view .toastui-editor-contents pre {
+    color: #ffffff;
+}
+
+.card-description-markdown-view .toastui-editor-contents a {
+    color: #67ccff;
+}

@@ -4,6 +4,9 @@ const state = {
     currentBoard: null,
     currentBoardId: null,
     currentBoardView: "kanban",
+    currentBoardAccess: null,
+    authUser: null,
+    loginModalCancelable: false,
     editingCard: null,
     editingBoardId: null,
     sortables: [],
@@ -12,11 +15,15 @@ const state = {
     boardHub: {
         scope: "personal",
         orgName: "",
+        sharedOwnerType: "",
+        sharedOwnerId: "",
+        sharedOrgId: "",
         sortBy: "custom",
     },
     boardHubGroups: {
         mine: true,
         projects: true,
+        sharedProjects: true,
     },
 };
 
@@ -46,25 +53,65 @@ const cardModalEl = document.getElementById("cardModal");
 const boardFormModalEl = document.getElementById("boardFormModal");
 const quickCreateModalEl = document.getElementById("quickCreateModal");
 const confirmDeleteModalEl = document.getElementById("confirmDeleteModal");
-const cardModal = new bootstrap.Modal(cardModalEl);
+const listSettingsModalEl = document.getElementById("listSettingsModal");
+const cardModal = new bootstrap.Modal(cardModalEl, { focus: false });
 const boardFormModal = new bootstrap.Modal(boardFormModalEl);
 const quickCreateModal = new bootstrap.Modal(quickCreateModalEl);
 const confirmDeleteModal = new bootstrap.Modal(confirmDeleteModalEl);
+const listSettingsModal = new bootstrap.Modal(listSettingsModalEl);
 const quickCreateTitleEl = document.getElementById("quickCreateTitle");
 const quickCreateInput = document.getElementById("quickCreateInput");
 const confirmDeleteTitleEl = document.getElementById("confirmDeleteTitle");
 const confirmDeleteMessageEl = document.getElementById("confirmDeleteMessage");
+const listSettingsTitleEl = document.getElementById("listSettingsTitle");
+const listSettingsTitleInput = document.getElementById("listSettingsTitleInput");
+const listSettingsShowChecklist = document.getElementById("listSettingsShowChecklist");
+const listSettingsShowComments = document.getElementById("listSettingsShowComments");
+const loginModalEl = document.getElementById("loginModal");
+const userPanelModalEl = document.getElementById("userPanelModal");
+const boardShareModalEl = document.getElementById("boardShareModal");
+const userFormModalEl = document.getElementById("userFormModal");
+const loginModal = loginModalEl ? new bootstrap.Modal(loginModalEl, { backdrop: "static", keyboard: false }) : null;
+const userPanelModal = userPanelModalEl ? new bootstrap.Modal(userPanelModalEl) : null;
+const boardShareModal = boardShareModalEl ? new bootstrap.Modal(boardShareModalEl) : null;
+const userFormModal = userFormModalEl ? new bootstrap.Modal(userFormModalEl) : null;
+const loginUsernameInput = document.getElementById("loginUsernameInput");
+const loginPasswordInput = document.getElementById("loginPasswordInput");
+const userFormTitleEl = document.getElementById("userFormTitle");
+const userFormUsernameWrap = document.getElementById("userFormUsernameWrap");
+const userFormUsernameInput = document.getElementById("userFormUsernameInput");
+const userFormDisplayNameInput = document.getElementById("userFormDisplayNameInput");
+const userFormPasswordInput = document.getElementById("userFormPasswordInput");
+const userFormPasswordConfirmWrap = document.getElementById("userFormPasswordConfirmWrap");
+const userFormPasswordConfirmInput = document.getElementById("userFormPasswordConfirmInput");
+const userFormPasswordHint = document.getElementById("userFormPasswordHint");
+const userFormShowPassword = document.getElementById("userFormShowPassword");
+const loginShowPassword = document.getElementById("loginShowPassword");
+let editingUserFormId = null;
+const confirmDeleteConfirmWrap = document.getElementById("confirmDeleteConfirmWrap");
+const confirmDeleteConfirmInput = document.getElementById("confirmDeleteConfirmInput");
+const confirmDeleteMathQuestionEl = document.getElementById("confirmDeleteMathQuestion");
+const confirmDeleteSubmitBtn = document.getElementById("confirmDeleteSubmitBtn");
 let quickCreateSubmitHandler = null;
 let confirmDeleteSubmitHandler = null;
+let confirmDeleteMathAnswer = null;
+let editingListSettingsId = null;
 let pendingDescriptionContent = null;
-let pendingDescriptionMode = "richtext";
+let pendingDescriptionMode = "markdown";
+let descriptionInteractionMode = "view";
 
+const cardDescriptionEditBtn = document.getElementById("cardDescriptionEditBtn");
+const cardDescriptionViewBtn = document.getElementById("cardDescriptionViewBtn");
+const cardDescriptionModePicker = document.getElementById("cardDescriptionModePicker");
 const cardDescriptionModeSelect = document.getElementById("cardDescriptionModeSelect");
 const cardDescriptionWrap = document.getElementById("cardDescriptionWrap");
+const cardDescriptionViewPane = document.getElementById("cardDescriptionViewPane");
+const cardDescriptionViewEmpty = document.getElementById("cardDescriptionViewEmpty");
+const cardDescriptionViewContent = document.getElementById("cardDescriptionViewContent");
+const cardDescriptionEditShell = document.getElementById("cardDescriptionEditShell");
 const cardDescriptionRichtextPane = document.getElementById("cardDescriptionRichtextPane");
 const cardDescriptionMarkdownPane = document.getElementById("cardDescriptionMarkdownPane");
-const cardDescriptionMarkdownInput = document.getElementById("cardDescriptionMarkdownInput");
-const cardDescriptionMarkdownPreview = document.getElementById("cardDescriptionMarkdownPreview");
+const cardDescriptionMarkdownEditor = document.getElementById("cardDescriptionMarkdownEditor");
 
 const cardTypeSelect = document.getElementById("cardTypeSelect");
 const cardTitleInput = document.getElementById("cardTitleInput");
@@ -85,6 +132,59 @@ document.getElementById("createBoardNavBtn").addEventListener("click", () => {
 });
 document.getElementById("quickCreateConfirmBtn").addEventListener("click", submitQuickCreate);
 document.getElementById("confirmDeleteSubmitBtn").addEventListener("click", submitConfirmDelete);
+document.getElementById("saveListSettingsBtn").addEventListener("click", () => {
+    saveListSettings().catch((error) => showError(error.message || "保存列表设置失败"));
+});
+document.getElementById("navUserBtn")?.addEventListener("click", () => {
+    if (!state.authUser) {
+        showLoginModal();
+        return;
+    }
+    openUserPanel();
+});
+document.getElementById("loginSubmitBtn")?.addEventListener("click", () => {
+    submitLogin().catch((error) => showError(error.message || "登录失败"));
+});
+document.getElementById("logoutBtn")?.addEventListener("click", () => {
+    logout().catch((error) => showError(error.message || "退出失败"));
+});
+document.getElementById("switchUserBtn")?.addEventListener("click", () => {
+    userPanelModal?.hide();
+    showLoginModal({ cancelable: true });
+});
+document.getElementById("loginModalCloseBtn")?.addEventListener("click", () => {
+    cancelLoginModal();
+});
+loginModalEl?.addEventListener("hidden.bs.modal", () => {
+    state.loginModalCancelable = false;
+    document.getElementById("loginModalCloseBtn")?.classList.add("d-none");
+});
+document.getElementById("addFriendBtn")?.addEventListener("click", () => {
+    addFriendByUsername().catch((error) => showError(error.message || "添加好友失败"));
+});
+document.getElementById("saveBoardShareBtn")?.addEventListener("click", () => {
+    saveBoardShare().catch((error) => showError(error.message || "分享失败"));
+});
+document.getElementById("saveUserFormBtn")?.addEventListener("click", () => {
+    saveUserForm().catch((error) => showError(error.message || "保存用户失败"));
+});
+loginPasswordInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+        event.preventDefault();
+        submitLogin().catch((error) => showError(error.message || "登录失败"));
+    }
+});
+userFormShowPassword?.addEventListener("change", () => {
+    setPasswordInputsVisible([userFormPasswordInput, userFormPasswordConfirmInput], userFormShowPassword.checked);
+});
+loginShowPassword?.addEventListener("change", () => {
+    setPasswordInputsVisible([loginPasswordInput], loginShowPassword.checked);
+});
+document.getElementById("deleteListFromSettingsBtn").addEventListener("click", () => {
+    if (editingListSettingsId) {
+        promptDeleteList(editingListSettingsId, { fromSettings: true });
+    }
+});
 quickCreateInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
         event.preventDefault();
@@ -107,7 +207,7 @@ function resolveCardDescriptionMode(card) {
     if (isHtmlDescription(card?.description)) {
         return "richtext";
     }
-    return "richtext";
+    return "markdown";
 }
 
 function applyDescriptionModeUI(mode) {
@@ -115,153 +215,220 @@ function applyDescriptionModeUI(mode) {
     cardDescriptionWrap?.classList.toggle("is-markdown-mode", isMarkdown);
     cardDescriptionRichtextPane?.classList.toggle("is-hidden", isMarkdown);
     cardDescriptionMarkdownPane?.classList.toggle("is-hidden", !isMarkdown);
+    if (cardDescriptionRichtextPane) {
+        cardDescriptionRichtextPane.hidden = isMarkdown;
+    }
     if (cardDescriptionMarkdownPane) {
         cardDescriptionMarkdownPane.hidden = !isMarkdown;
     }
 }
 
-function renderMarkdownInline(text) {
-    let output = escapeHtml(text);
-    output = output.replace(/`([^`]+)`/g, "<code>$1</code>");
-    output = output.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-    output = output.replace(/\*(.+?)\*/g, "<em>$1</em>");
-    output = output.replace(
-        /\[([^\]]+)\]\(([^)]+)\)/g,
-        (_match, label, href) =>
-            `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${label}</a>`
-    );
-    return output;
+function applyDescriptionInteractionUI(mode = descriptionInteractionMode) {
+    descriptionInteractionMode = mode;
+    const isEdit = mode === "edit";
+
+    cardDescriptionWrap?.classList.toggle("is-view-mode", !isEdit);
+    cardDescriptionWrap?.classList.toggle("is-edit-mode", isEdit);
+
+    cardDescriptionViewPane?.classList.toggle("is-hidden", isEdit);
+    if (cardDescriptionViewPane) {
+        cardDescriptionViewPane.hidden = isEdit;
+    }
+
+    cardDescriptionEditShell?.classList.toggle("is-hidden", !isEdit);
+    if (cardDescriptionEditShell) {
+        cardDescriptionEditShell.hidden = !isEdit;
+    }
+
+    cardDescriptionEditBtn?.classList.toggle("is-hidden", isEdit);
+    if (cardDescriptionEditBtn) {
+        cardDescriptionEditBtn.hidden = isEdit;
+    }
+
+    cardDescriptionViewBtn?.classList.toggle("is-hidden", !isEdit);
+    if (cardDescriptionViewBtn) {
+        cardDescriptionViewBtn.hidden = !isEdit;
+    }
+
+    cardDescriptionModePicker?.classList.toggle("is-hidden", !isEdit);
+    if (cardDescriptionModePicker) {
+        cardDescriptionModePicker.hidden = !isEdit;
+    }
 }
 
-function renderMarkdownToHtml(source) {
-    const lines = String(source || "").split(/\r?\n/);
-    const html = [];
-    let inCode = false;
-    let codeLines = [];
-    let listType = null;
-    const listItems = [];
-
-    function flushList() {
-        if (!listItems.length) {
-            return;
-        }
-        html.push(listType === "ol" ? "<ol>" : "<ul>");
-        listItems.forEach((item) => html.push(`<li>${item}</li>`));
-        html.push(listType === "ol" ? "</ol>" : "</ul>");
-        listItems.length = 0;
-        listType = null;
+function destroyDescriptionEditors() {
+    descriptionEditorMountToken += 1;
+    if (typeof CardDescriptionEditor !== "undefined") {
+        CardDescriptionEditor.destroy();
     }
-
-    for (const line of lines) {
-        const fence = line.trim();
-        if (fence.startsWith("```")) {
-            flushList();
-            if (inCode) {
-                html.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
-                codeLines = [];
-                inCode = false;
-            } else {
-                inCode = true;
-            }
-            continue;
-        }
-        if (inCode) {
-            codeLines.push(line);
-            continue;
-        }
-
-        const trimmed = line.trim();
-        if (!trimmed) {
-            flushList();
-            continue;
-        }
-        if (/^#{1,3}\s+/.test(trimmed)) {
-            flushList();
-            const level = trimmed.match(/^#+/)[0].length;
-            const text = trimmed.replace(/^#+\s+/, "");
-            html.push(`<h${level}>${renderMarkdownInline(text)}</h${level}>`);
-            continue;
-        }
-        if (/^>\s+/.test(trimmed)) {
-            flushList();
-            html.push(`<blockquote><p>${renderMarkdownInline(trimmed.replace(/^>\s+/, ""))}</p></blockquote>`);
-            continue;
-        }
-        if (/^[-*]\s+/.test(trimmed)) {
-            if (listType && listType !== "ul") {
-                flushList();
-            }
-            listType = "ul";
-            listItems.push(renderMarkdownInline(trimmed.replace(/^[-*]\s+/, "")));
-            continue;
-        }
-        if (/^\d+\.\s+/.test(trimmed)) {
-            if (listType && listType !== "ol") {
-                flushList();
-            }
-            listType = "ol";
-            listItems.push(renderMarkdownInline(trimmed.replace(/^\d+\.\s+/, "")));
-            continue;
-        }
-        flushList();
-        html.push(`<p>${renderMarkdownInline(trimmed)}</p>`);
+    if (typeof CardMarkdownEditor !== "undefined") {
+        CardMarkdownEditor.destroyEditor?.();
     }
-
-    flushList();
-    if (inCode && codeLines.length) {
-        html.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
-    }
-    return html.join("");
 }
 
-function syncMarkdownPreview() {
-    if (!cardDescriptionMarkdownPreview) {
+function destroyDescriptionViewers() {
+    if (typeof CardMarkdownEditor !== "undefined") {
+        CardMarkdownEditor.destroyViewer?.();
+    }
+}
+
+function collectCurrentDescriptionContent() {
+    const mode = cardDescriptionModeSelect?.value || pendingDescriptionMode || "markdown";
+    if (descriptionInteractionMode === "edit") {
+        if (mode === "markdown") {
+            return getCardMarkdownContent();
+        }
+        if (typeof CardDescriptionEditor !== "undefined") {
+            return CardDescriptionEditor.getHtml?.() || "";
+        }
+    }
+    return pendingDescriptionContent ?? "";
+}
+
+function renderDescriptionView() {
+    destroyDescriptionEditors();
+    destroyDescriptionViewers();
+
+    const mode = pendingDescriptionMode;
+    const content = pendingDescriptionContent ?? "";
+    const hasContent = Boolean(String(content).trim());
+
+    if (cardDescriptionViewEmpty) {
+        cardDescriptionViewEmpty.hidden = hasContent;
+    }
+    if (!cardDescriptionViewContent) {
         return;
     }
-    const source = cardDescriptionMarkdownInput?.value || "";
-    cardDescriptionMarkdownPreview.innerHTML = source.trim()
-        ? renderMarkdownToHtml(source)
-        : '<p class="card-description-markdown-empty">预览将显示在这里</p>';
+
+    cardDescriptionViewContent.hidden = !hasContent;
+    cardDescriptionViewContent.innerHTML = "";
+    cardDescriptionViewContent.className = "card-description-view-content";
+
+    if (!hasContent) {
+        return;
+    }
+
+    if (mode === "markdown") {
+        cardDescriptionViewContent.classList.add("card-description-view-content--markdown");
+        if (typeof CardMarkdownEditor !== "undefined") {
+            try {
+                CardMarkdownEditor.mountViewer({ content });
+            } catch (error) {
+                showError(error.message || "Markdown 预览渲染失败");
+            }
+        }
+        return;
+    }
+
+    cardDescriptionViewContent.classList.add("card-description-view-content--richtext");
+    cardDescriptionViewContent.innerHTML = content;
+}
+
+function enterDescriptionEditMode() {
+    applyDescriptionInteractionUI("edit");
+    applyDescriptionModeUI(pendingDescriptionMode);
+    if (cardDescriptionModeSelect) {
+        cardDescriptionModeSelect.value = pendingDescriptionMode;
+    }
+    scheduleDescriptionEditorMount(pendingDescriptionMode);
+}
+
+function leaveDescriptionEditMode() {
+    pendingDescriptionContent = collectCurrentDescriptionContent();
+    pendingDescriptionMode = cardDescriptionModeSelect?.value || pendingDescriptionMode || "markdown";
+    applyDescriptionInteractionUI("view");
+    renderDescriptionView();
+}
+
+let descriptionEditorMountToken = 0;
+
+function scheduleDescriptionEditorMount(mode = pendingDescriptionMode) {
+    if (descriptionInteractionMode !== "edit") {
+        return;
+    }
+    const token = ++descriptionEditorMountToken;
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+            if (token !== descriptionEditorMountToken) {
+                return;
+            }
+            if (mode === "markdown") {
+                mountCardMarkdownEditor();
+            } else {
+                mountCardDescriptionEditor();
+            }
+        });
+    });
+}
+
+function mountCardMarkdownEditor() {
+    if (typeof CardMarkdownEditor === "undefined") {
+        showError("Markdown 编辑器脚本未加载，请 Ctrl+F5 强刷后重试");
+        return;
+    }
+    try {
+        CardMarkdownEditor.mount({ content: pendingDescriptionContent ?? "" });
+        cardModal._focustrap?.deactivate?.();
+    } catch (error) {
+        showError(error.message || "Markdown 编辑器初始化失败");
+    }
+}
+
+function destroyCardMarkdownEditor() {
+    if (typeof CardMarkdownEditor !== "undefined") {
+        CardMarkdownEditor.destroyEditor?.();
+    }
+}
+
+function getCardMarkdownContent() {
+    if (typeof CardMarkdownEditor === "undefined") {
+        return "";
+    }
+    return CardMarkdownEditor.getMarkdown?.() || "";
 }
 
 function switchDescriptionMode(nextMode) {
     const mode = nextMode === "markdown" ? "markdown" : "richtext";
-    const currentMode = cardDescriptionModeSelect?.value || pendingDescriptionMode || "richtext";
+    const currentMode = cardDescriptionModeSelect?.value || pendingDescriptionMode || "markdown";
+
     if (mode !== currentMode) {
-        if (mode === "markdown") {
-            let plainText = "";
-            if (typeof CardDescriptionEditor !== "undefined") {
-                plainText = CardDescriptionEditor.getPlainText?.() || "";
-            }
-            if (typeof CardDescriptionEditor !== "undefined") {
-                CardDescriptionEditor.destroy();
-            }
-            if (cardDescriptionMarkdownInput) {
-                cardDescriptionMarkdownInput.value = plainText;
-            }
-            syncMarkdownPreview();
+        if (currentMode === "richtext") {
+            pendingDescriptionContent =
+                typeof CardDescriptionEditor !== "undefined"
+                    ? CardDescriptionEditor.getPlainText?.() || ""
+                    : pendingDescriptionContent;
         } else {
-            pendingDescriptionContent = cardDescriptionMarkdownInput?.value || "";
-            mountCardDescriptionEditor();
+            pendingDescriptionContent = getCardMarkdownContent();
+        }
+        destroyCardMarkdownEditor();
+        if (typeof CardDescriptionEditor !== "undefined") {
+            CardDescriptionEditor.destroy();
         }
     }
+
     pendingDescriptionMode = mode;
     if (cardDescriptionModeSelect) {
         cardDescriptionModeSelect.value = mode;
     }
     applyDescriptionModeUI(mode);
+    if (descriptionInteractionMode === "edit") {
+        scheduleDescriptionEditorMount(mode);
+    }
 }
 
 function collectDescriptionPayload() {
-    const mode = cardDescriptionModeSelect?.value || pendingDescriptionMode || "richtext";
+    const mode = cardDescriptionModeSelect?.value || pendingDescriptionMode || "markdown";
+    const description = collectCurrentDescriptionContent();
+    pendingDescriptionContent = description;
+    pendingDescriptionMode = mode;
     if (mode === "markdown") {
         return {
-            description: cardDescriptionMarkdownInput?.value || "",
+            description,
             description_data: { mode: "markdown" },
         };
     }
     return {
-        description: typeof CardDescriptionEditor !== "undefined" ? CardDescriptionEditor.getHtml() : "",
+        description,
         description_data: { mode: "richtext" },
     };
 }
@@ -278,38 +445,56 @@ function mountCardDescriptionEditor() {
     }
 }
 
+document.addEventListener(
+    "focusin",
+    (event) => {
+        if (!cardModalEl.classList.contains("show")) {
+            return;
+        }
+        if (event.target.closest("#cardDescriptionMarkdownPane, .card-description-markdown-host")) {
+            event.stopImmediatePropagation();
+        }
+    },
+    true
+);
+
 cardModalEl.addEventListener("shown.bs.modal", () => {
     if (!state.editingCard) {
         return;
     }
-    if ((cardDescriptionModeSelect?.value || pendingDescriptionMode) === "richtext") {
-        mountCardDescriptionEditor();
+    if (descriptionInteractionMode === "edit") {
+        scheduleDescriptionEditorMount(pendingDescriptionMode);
+        return;
     }
+    renderDescriptionView();
 });
 cardModalEl.addEventListener("hidden.bs.modal", () => {
+    descriptionEditorMountToken += 1;
     if (typeof CardDescriptionEditor !== "undefined") {
         CardDescriptionEditor.destroy();
     }
+    if (typeof CardMarkdownEditor !== "undefined") {
+        CardMarkdownEditor.destroy?.();
+    }
     pendingDescriptionContent = null;
-    pendingDescriptionMode = "richtext";
+    pendingDescriptionMode = "markdown";
+    descriptionInteractionMode = "view";
     if (cardDescriptionModeSelect) {
-        cardDescriptionModeSelect.value = "richtext";
+        cardDescriptionModeSelect.value = "markdown";
     }
-    if (cardDescriptionMarkdownInput) {
-        cardDescriptionMarkdownInput.value = "";
-    }
-    syncMarkdownPreview();
-    applyDescriptionModeUI("richtext");
+    applyDescriptionModeUI("markdown");
+    applyDescriptionInteractionUI("view");
 });
+cardDescriptionEditBtn?.addEventListener("click", enterDescriptionEditMode);
+cardDescriptionViewBtn?.addEventListener("click", leaveDescriptionEditMode);
 cardDescriptionModeSelect?.addEventListener("change", () => {
     switchDescriptionMode(cardDescriptionModeSelect.value);
 });
-cardDescriptionMarkdownInput?.addEventListener("input", syncMarkdownPreview);
-[cardModalEl, boardFormModalEl, quickCreateModalEl, confirmDeleteModalEl].forEach((modalEl) => {
+[cardModalEl, boardFormModalEl, quickCreateModalEl, confirmDeleteModalEl, listSettingsModalEl, userPanelModalEl, boardShareModalEl, userFormModalEl].forEach((modalEl) => {
     modalEl.addEventListener("hidden.bs.modal", cleanupModalOverlay);
 });
 confirmDeleteModalEl.addEventListener("hidden.bs.modal", () => {
-    confirmDeleteSubmitHandler = null;
+    resetConfirmDeleteState();
 });
 appView.addEventListener("click", handleBoardPageClick);
 globalSearchInput.addEventListener("input", debounce(() => performSearch(globalSearchInput.value.trim()), 250));
@@ -336,25 +521,261 @@ init();
 async function init() {
     cleanupModalOverlay();
     try {
+        await loadAuth();
+        updateNavAuth();
+        if (!state.authUser) {
+            showLoginModal();
+            return;
+        }
         await loadSettings();
         await loadBoards();
         renderRoute();
     } catch (error) {
+        if (String(error.message || "").includes("登录")) {
+            showLoginModal();
+            return;
+        }
         showError(error.message || "初始化失败");
     }
 }
 
+function updateNavAuth() {
+    const settingsBtn = document.getElementById("navSettingsBtn");
+    const createBtn = document.getElementById("createBoardNavBtn");
+    const userBtn = document.getElementById("navUserBtn");
+    const loggedIn = Boolean(state.authUser);
+    if (settingsBtn) {
+        settingsBtn.classList.toggle("d-none", !loggedIn);
+    }
+    if (createBtn) {
+        createBtn.classList.toggle("d-none", !loggedIn);
+    }
+    if (userBtn) {
+        userBtn.textContent = loggedIn ? state.authUser.display_name || state.authUser.username : "用户";
+    }
+}
+
+async function loadAuth() {
+    try {
+        const data = await api("/api/auth/me");
+        state.authUser = data.user || null;
+    } catch (_error) {
+        state.authUser = null;
+    }
+}
+
+function setPasswordInputsVisible(inputs, visible) {
+    const type = visible ? "text" : "password";
+    inputs.forEach((input) => {
+        if (input) {
+            input.type = type;
+        }
+    });
+}
+
+function resetPasswordVisibility(toggle, inputs) {
+    if (toggle) {
+        toggle.checked = false;
+    }
+    setPasswordInputsVisible(inputs, false);
+}
+
+function showLoginModal({ cancelable = false } = {}) {
+    if (!loginModal) {
+        return;
+    }
+    state.loginModalCancelable = cancelable;
+    document.getElementById("loginModalCloseBtn")?.classList.toggle("d-none", !cancelable);
+    loginUsernameInput.value = "";
+    loginPasswordInput.value = "";
+    resetPasswordVisibility(loginShowPassword, [loginPasswordInput]);
+    loginModal.show();
+    window.setTimeout(() => loginUsernameInput?.focus(), 180);
+}
+
+function cancelLoginModal() {
+    if (!state.loginModalCancelable) {
+        return;
+    }
+    loginModal?.hide();
+    state.loginModalCancelable = false;
+}
+
+async function submitLogin() {
+    const username = loginUsernameInput.value.trim();
+    const password = loginPasswordInput.value;
+    const result = await api("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ username, password }),
+    });
+    state.authUser = result.user;
+    loginModal?.hide();
+    updateNavAuth();
+    await loadSettings();
+    await loadBoards();
+    if (location.hash === "#/login" || !location.hash) {
+        location.hash = "#/home/personal";
+    }
+    renderRoute();
+    showSuccess("登录成功");
+}
+
+async function logout() {
+    await api("/api/auth/logout", { method: "POST" });
+    state.authUser = null;
+    state.boards = [];
+    state.currentBoard = null;
+    state.currentBoardId = null;
+    state.currentBoardAccess = null;
+    state.settings = { card_types: [], organizations: [], shared_boards: [], shared_org_index: [], board_statuses: [] };
+    updateNavAuth();
+}
+
+async function openUserPanel() {
+    document.getElementById("userPanelCurrentName").textContent =
+        state.authUser?.display_name || state.authUser?.username || "";
+    await renderFriendsList();
+    userPanelModal?.show();
+}
+
+async function renderFriendsList() {
+    const container = document.getElementById("friendsList");
+    if (!container) {
+        return;
+    }
+    const data = await api("/api/users/friends");
+    const friends = data.items || [];
+    container.innerHTML = friends.length
+        ? friends
+              .map(
+                  (friend) => `
+            <div class="friend-item">
+                <span>${escapeHtml(friend.display_name || friend.username)}</span>
+                <button class="btn btn-sm btn-outline-danger" data-remove-friend="${friend.user_id}" type="button">移除</button>
+            </div>`
+              )
+              .join("")
+        : `<p class="text-muted mb-0">暂无好友</p>`;
+    container.querySelectorAll("[data-remove-friend]").forEach((node) => {
+        node.addEventListener("click", () => {
+            removeFriend(node.dataset.removeFriend).catch((error) => showError(error.message || "移除好友失败"));
+        });
+    });
+}
+
+async function addFriendByUsername() {
+    const username = document.getElementById("friendSearchInput").value.trim();
+    if (!username) {
+        return;
+    }
+    await api("/api/users/friends", {
+        method: "POST",
+        body: JSON.stringify({ username }),
+    });
+    document.getElementById("friendSearchInput").value = "";
+    await renderFriendsList();
+    showSuccess("好友已添加");
+}
+
+async function removeFriend(friendUserId) {
+    await api(`/api/users/friends/${friendUserId}`, { method: "DELETE" });
+    await renderFriendsList();
+    showSuccess("好友已移除");
+}
+
+async function openBoardShareModal() {
+    if (!state.currentBoardId || state.currentBoardAccess?.shared) {
+        return;
+    }
+    const friendsData = await api("/api/users/friends");
+    const friends = friendsData.items || [];
+    const select = document.getElementById("shareFriendSelect");
+    select.innerHTML = friends.length
+        ? friends.map((friend) => `<option value="${friend.user_id}">${escapeHtml(friend.display_name || friend.username)}</option>`).join("")
+        : `<option value="">暂无好友</option>`;
+    document.getElementById("sharePermissionEdit").checked = false;
+    const sharesData = await api(`/api/shares?board_id=${encodeURIComponent(state.currentBoardId)}`);
+    const list = document.getElementById("existingSharesList");
+    const shares = sharesData.items || [];
+    list.innerHTML = shares.length
+        ? `<p class="field-label mt-3">已分享</p>${shares
+              .map((share) => {
+                  const grantee = share.grantee_user_id;
+                  const perms = share.permissions || {};
+                  return `<div class="share-item">${escapeHtml(grantee)} · ${perms.edit ? "可修改" : "只读"} <button class="btn btn-sm btn-outline-danger" data-delete-share="${share.id}" type="button">撤销</button></div>`;
+              })
+              .join("")}`
+        : "";
+    list.querySelectorAll("[data-delete-share]").forEach((node) => {
+        node.addEventListener("click", () => {
+            api(`/api/shares/${node.dataset.deleteShare}`, { method: "DELETE" })
+                .then(() => openBoardShareModal())
+                .catch((error) => showError(error.message || "撤销分享失败"));
+        });
+    });
+    boardShareModal?.show();
+}
+
+async function saveBoardShare() {
+    const granteeUserId = document.getElementById("shareFriendSelect").value;
+    if (!granteeUserId) {
+        showError("请选择好友");
+        return;
+    }
+    await api("/api/shares", {
+        method: "POST",
+        body: JSON.stringify({
+            board_id: state.currentBoardId,
+            grantee_user_id: granteeUserId,
+            permissions: {
+                view: true,
+                edit: document.getElementById("sharePermissionEdit").checked,
+            },
+        }),
+    });
+    boardShareModal?.hide();
+    showSuccess("分享已保存");
+}
+
+function isBoardReadOnly() {
+    return Boolean(state.currentBoardAccess?.shared && !state.currentBoardAccess?.permissions?.edit);
+}
+
 function renderRoute() {
+    if (!state.authUser) {
+        showLoginModal();
+        return;
+    }
     destroySortables();
     const hash = location.hash || "#/home/personal";
+    if (hash === "#/login") {
+        showLoginModal();
+        return;
+    }
     const boardMatch = hash.match(/^#\/board\/(\d+)(?:\/card\/([^/]+))?/);
     if (boardMatch) {
-        openBoard(boardMatch[1], boardMatch[2] || null);
+        const query = hash.includes("?") ? hash.split("?")[1] : "";
+        const params = new URLSearchParams(query);
+        openBoard(
+            boardMatch[1],
+            boardMatch[2] || null,
+            params.get("owner_tenant_type"),
+            params.get("owner_tenant_id")
+        );
         return;
     }
     if (hash === "#/settings" || hash.startsWith("#/settings/")) {
+        const activeTab = resolveSettingsTab(location.hash);
+        const allowedTabs = getVisibleSettingsTabs().map((tab) => tab.id);
+        if (!allowedTabs.includes(activeTab)) {
+            showError("无权访问该设置页");
+            location.hash = "#/home/personal";
+            renderBoardList();
+            return;
+        }
         if (hash === "#/settings") {
-            history.replaceState(null, "", "#/settings/statuses");
+            const defaultTab = state.authUser?.is_super_admin ? "statuses" : "my-organizations";
+            history.replaceState(null, "", `#/settings/${defaultTab}`);
         }
         renderSettingsPage(resolveSettingsTab(location.hash));
         return;
@@ -370,16 +791,56 @@ function renderRoute() {
 
 function applyBoardHubRoute(hash) {
     const normalized = hash.split("?")[0];
+    const sharedOrgOwnerMatch = normalized.match(/^#\/home\/shared-org\/([^/]+)\/([^/]+)\/(.+)$/);
+    const sharedOrgMatch = normalized.match(/^#\/home\/shared-org\/(.+)$/);
+    const sharedMatch = normalized.match(/^#\/home\/shared\/([^/]+)\/([^/]+)\/([^/]+)(?:\/(.+))?$/);
     const orgMatch = normalized.match(/^#\/home\/org\/(.+)$/);
 
+    if (sharedOrgOwnerMatch) {
+        state.boardHub.scope = "shared-org";
+        state.boardHub.sharedOwnerType = decodeURIComponent(sharedOrgOwnerMatch[1]);
+        state.boardHub.sharedOwnerId = decodeURIComponent(sharedOrgOwnerMatch[2]);
+        state.boardHub.orgName = decodeURIComponent(sharedOrgOwnerMatch[3]);
+        state.boardHub.sharedOrgId = "";
+        return;
+    }
+    if (sharedOrgMatch) {
+        state.boardHub.scope = "shared-org";
+        state.boardHub.orgName = decodeURIComponent(sharedOrgMatch[1]);
+        state.boardHub.sharedOwnerType = "";
+        state.boardHub.sharedOwnerId = "";
+        state.boardHub.sharedOrgId = "";
+        return;
+    }
+    if (sharedMatch) {
+        state.boardHub.scope = "shared-org";
+        state.boardHub.sharedOwnerType = decodeURIComponent(sharedMatch[1]);
+        state.boardHub.sharedOwnerId = decodeURIComponent(sharedMatch[2]);
+        const third = decodeURIComponent(sharedMatch[3]);
+        const fourth = sharedMatch[4] ? decodeURIComponent(sharedMatch[4]) : "";
+        if (third.startsWith("org_")) {
+            state.boardHub.sharedOrgId = third;
+            state.boardHub.orgName = fourth || third;
+        } else {
+            state.boardHub.sharedOrgId = "";
+            state.boardHub.orgName = third;
+        }
+        return;
+    }
     if (orgMatch) {
         state.boardHub.scope = "org";
         state.boardHub.orgName = decodeURIComponent(orgMatch[1]);
+        state.boardHub.sharedOwnerType = "";
+        state.boardHub.sharedOwnerId = "";
+        state.boardHub.sharedOrgId = "";
         return;
     }
     if (normalized === "#/home/workbench") {
         state.boardHub.scope = "workbench";
         state.boardHub.orgName = "";
+        state.boardHub.sharedOwnerType = "";
+        state.boardHub.sharedOwnerId = "";
+        state.boardHub.sharedOrgId = "";
         return;
     }
     if (normalized === "#/home/mindmap") {
@@ -388,6 +849,9 @@ function applyBoardHubRoute(hash) {
     if (normalized === "#/home/starred") {
         state.boardHub.scope = "starred";
         state.boardHub.orgName = "";
+        state.boardHub.sharedOwnerType = "";
+        state.boardHub.sharedOwnerId = "";
+        state.boardHub.sharedOrgId = "";
         return;
     }
     if (normalized === "#/home/list" || normalized === "#/home" || normalized === "#/home/") {
@@ -395,9 +859,20 @@ function applyBoardHubRoute(hash) {
     }
     state.boardHub.scope = "personal";
     state.boardHub.orgName = "";
+    state.boardHub.sharedOwnerType = "";
+    state.boardHub.sharedOwnerId = "";
+    state.boardHub.sharedOrgId = "";
 }
 
-function buildBoardHubHref(scope, orgName = "") {
+function buildBoardHubHref(scope, orgName = "", sharedMeta = null) {
+    if (scope === "shared-org") {
+        const meta = sharedMeta || {};
+        const label = orgName || meta.orgName || "";
+        if (meta.ownerTenantType && meta.ownerTenantId) {
+            return `#/home/shared-org/${encodeURIComponent(meta.ownerTenantType)}/${encodeURIComponent(meta.ownerTenantId)}/${encodeURIComponent(label)}`;
+        }
+        return `#/home/shared-org/${encodeURIComponent(label)}`;
+    }
     if (scope === "org" && orgName) {
         return `#/home/org/${encodeURIComponent(orgName)}`;
     }
@@ -411,6 +886,13 @@ function buildBoardHubHref(scope, orgName = "") {
 }
 
 function getBoardHubBackHref() {
+    if (state.boardHub.scope === "shared-org") {
+        return buildBoardHubHref("shared-org", state.boardHub.orgName, {
+            ownerTenantType: state.boardHub.sharedOwnerType,
+            ownerTenantId: state.boardHub.sharedOwnerId,
+            orgName: state.boardHub.orgName,
+        });
+    }
     return buildBoardHubHref(state.boardHub.scope, state.boardHub.orgName);
 }
 
@@ -420,6 +902,13 @@ function getBoardHubTitle(hub = state.boardHub) {
     }
     if (hub.scope === "starred") {
         return "星标看板";
+    }
+    if (hub.scope === "shared-org") {
+        const group = findSharedOrganizationNavGroup(hub);
+        if (group) {
+            return formatSharedOrgNavLabel(group);
+        }
+        return hub.orgName || "共享项目";
     }
     if (hub.scope === "org") {
         return hub.orgName || "项目看板";
@@ -457,18 +946,39 @@ function toggleBoardStar(boardId) {
 
 function filterBoardsForHub(boards, hub = state.boardHub) {
     if (hub.scope === "workbench") {
-        return boards.slice();
+        return boards.filter((board) => !board.shared);
     }
     if (hub.scope === "starred") {
         const starred = new Set(getStarredBoardIds());
         return boards.filter((board) => starred.has(String(board.id)));
     }
+    if (hub.scope === "shared-org") {
+        const orgName = normalizeBoardOrganization(hub.orgName);
+        return boards.filter((board) => {
+            if (!board.shared) {
+                return false;
+            }
+            if (normalizeBoardOrganization(board.organization) !== orgName) {
+                return false;
+            }
+            if (hub.sharedOwnerType && hub.sharedOwnerId) {
+                return (
+                    String(board.owner_tenant_type || "") === String(hub.sharedOwnerType) &&
+                    String(board.owner_tenant_id || "") === String(hub.sharedOwnerId)
+                );
+            }
+            return true;
+        });
+    }
     if (hub.scope === "org") {
         const orgName = normalizeBoardOrganization(hub.orgName);
-        return boards.filter((board) => normalizeBoardOrganization(board.organization) === orgName);
+        return boards.filter(
+            (board) => !board.shared && normalizeBoardOrganization(board.organization) === orgName
+        );
     }
     return boards.filter(
-        (board) => normalizeBoardOrganization(board.organization) === PERSONAL_BOARD_ORGANIZATION
+        (board) =>
+            !board.shared && normalizeBoardOrganization(board.organization) === PERSONAL_BOARD_ORGANIZATION
     );
 }
 
@@ -509,7 +1019,84 @@ function getBoardStatuses() {
 }
 
 function getOrganizations() {
-    return state.settings.organizations || state.currentBoard?.settings?.organizations || [];
+    if (state.authUser?.is_super_admin) {
+        return state.settings.organizations || state.currentBoard?.settings?.organizations || [];
+    }
+    return state.settings.organizations || [];
+}
+
+function getSharedBoards() {
+    return state.settings.shared_boards || [];
+}
+
+function getSharedOrgIndex() {
+    return state.settings.shared_org_index || [];
+}
+
+function getSharedOrganizationNavGroups() {
+    return groupSharedBoardsForNav();
+}
+
+function formatSharedOrgNavLabel(group) {
+    const orgName = normalizeBoardOrganization(group.org_name || group.organization);
+    const ownerName = (group.owner_display_name || "").trim() || "未知用户";
+    return `${orgName} (${ownerName})`;
+}
+
+function findSharedOrganizationNavGroup(hub = state.boardHub) {
+    const orgName = normalizeBoardOrganization(hub.orgName);
+    const groups = getSharedOrganizationNavGroups();
+    if (hub.sharedOwnerType && hub.sharedOwnerId) {
+        return groups.find(
+            (group) =>
+                normalizeBoardOrganization(group.org_name) === orgName &&
+                String(group.owner_tenant_type || "") === String(hub.sharedOwnerType) &&
+                String(group.owner_tenant_id || "") === String(hub.sharedOwnerId)
+        );
+    }
+    return groups.find((group) => normalizeBoardOrganization(group.org_name) === orgName);
+}
+
+function isSharedOrganizationNavActive(group, hub = state.boardHub) {
+    return (
+        hub.scope === "shared-org" &&
+        normalizeBoardOrganization(hub.orgName) === normalizeBoardOrganization(group.org_name) &&
+        String(hub.sharedOwnerType || "") === String(group.owner_tenant_type || "") &&
+        String(hub.sharedOwnerId || "") === String(group.owner_tenant_id || "")
+    );
+}
+
+function getSharedOrganizationNames() {
+    return getSharedOrganizationNavGroups().map((group) => formatSharedOrgNavLabel(group));
+}
+
+function groupSharedBoardsForNav(boards = getSharedBoards()) {
+    const grouped = new Map();
+    for (const item of boards) {
+        const orgName = normalizeBoardOrganization(item.organization);
+        const key = `${item.owner_tenant_type}:${item.owner_tenant_id}:${orgName}`;
+        if (!grouped.has(key)) {
+            grouped.set(key, {
+                owner_tenant_type: item.owner_tenant_type,
+                owner_tenant_id: item.owner_tenant_id,
+                org_name: orgName,
+                owner_display_name: item.owner_display_name || "",
+                board_ids: [],
+                boards: [],
+            });
+        }
+        const group = grouped.get(key);
+        const boardId = String(item.board_id || "");
+        if (boardId && !group.board_ids.includes(boardId)) {
+            group.board_ids.push(boardId);
+        }
+        group.boards.push(item);
+    }
+    return Array.from(grouped.values()).sort((left, right) => {
+        const leftLabel = `${left.org_name} ${left.owner_display_name}`;
+        const rightLabel = `${right.org_name} ${right.owner_display_name}`;
+        return leftLabel.localeCompare(rightLabel, "zh-CN");
+    });
 }
 
 function resolveBoardStatus(board) {
@@ -800,15 +1387,40 @@ async function updateBoardStatus(statusId) {
     showSuccess("看板状态已更新");
 }
 
-function findBoardById(boardId) {
-    const fromList = state.boards.find((item) => String(item.id) === String(boardId));
+function findBoardById(boardId, ownerTenantType = null, ownerTenantId = null) {
+    if (ownerTenantType && ownerTenantId) {
+        const sharedMatch = state.boards.find(
+            (item) =>
+                String(item.id) === String(boardId) &&
+                item.shared &&
+                String(item.owner_tenant_type) === String(ownerTenantType) &&
+                String(item.owner_tenant_id) === String(ownerTenantId)
+        );
+        if (sharedMatch) {
+            return sharedMatch;
+        }
+    }
+    const fromList = state.boards.find(
+        (item) => String(item.id) === String(boardId) && !item.shared
+    );
     if (fromList) {
         return fromList;
+    }
+    const fallback = state.boards.find((item) => String(item.id) === String(boardId));
+    if (fallback) {
+        return fallback;
     }
     if (state.currentBoard?.board && String(state.currentBoard.board.id) === String(boardId)) {
         return state.currentBoard.board;
     }
     return null;
+}
+
+function buildBoardHref(board) {
+    if (board?.shared && board.owner_tenant_type && board.owner_tenant_id) {
+        return `#/board/${board.id}?owner_tenant_type=${encodeURIComponent(board.owner_tenant_type)}&owner_tenant_id=${encodeURIComponent(board.owner_tenant_id)}`;
+    }
+    return `#/board/${board.id}`;
 }
 
 const STATUS_ICON_OPTIONS = [
@@ -912,16 +1524,37 @@ const EDITABLE_FONT_SCOPES = [
 ];
 
 const SETTINGS_TABS = [
-    { id: "statuses", label: "看板状态", hash: "#/settings/statuses", icon: "◉" },
-    { id: "organizations", label: "所属组织", hash: "#/settings/organizations", icon: "▤" },
-    { id: "fonts", label: "字体", hash: "#/settings/fonts", icon: "A" },
-    { id: "data-transfer", label: "导入导出", hash: "#/settings/data-transfer", icon: "⇅" },
+    { id: "statuses", label: "看板状态", hash: "#/settings/statuses", icon: "◉", adminOnly: true },
+    { id: "organizations", label: "所属组织", hash: "#/settings/organizations", icon: "▤", adminOnly: true },
+    { id: "my-organizations", label: "我的项目", hash: "#/settings/my-organizations", icon: "▤", userOnly: true },
+    { id: "fonts", label: "字体", hash: "#/settings/fonts", icon: "A", adminOnly: true },
+    { id: "users", label: "用户管理", hash: "#/settings/users", icon: "👤", adminOnly: true },
+    { id: "data-transfer", label: "导入导出", hash: "#/settings/data-transfer", icon: "⇅", adminOnly: true },
 ];
+
+function getVisibleSettingsTabs() {
+    const isAdmin = Boolean(state.authUser?.is_super_admin);
+    return SETTINGS_TABS.filter((tab) => {
+        if (tab.adminOnly && !isAdmin) {
+            return false;
+        }
+        if (tab.userOnly && isAdmin) {
+            return false;
+        }
+        return true;
+    });
+}
 
 function resolveSettingsTab(hash = location.hash) {
     const normalized = hash.split("?")[0];
+    if (normalized.startsWith("#/settings/users")) {
+        return "users";
+    }
     if (normalized.startsWith("#/settings/organizations")) {
         return "organizations";
+    }
+    if (normalized.startsWith("#/settings/my-organizations")) {
+        return "my-organizations";
     }
     if (normalized.startsWith("#/settings/data-transfer")) {
         return "data-transfer";
@@ -1152,7 +1785,8 @@ function renderSettingsSidebar(activeTab) {
     return `
         <aside class="settings-sidebar">
             <nav class="settings-nav" aria-label="设置分类">
-                ${SETTINGS_TABS.map(
+                ${getVisibleSettingsTabs()
+                    .map(
                     (tab) => `
                     <a
                         class="settings-nav-item ${tab.id === activeTab ? "active" : ""}"
@@ -1163,10 +1797,156 @@ function renderSettingsSidebar(activeTab) {
                         <span>${tab.label}</span>
                     </a>
                 `
-                ).join("")}
+                )
+                    .join("")}
             </nav>
         </aside>
     `;
+}
+
+function renderUsersSettingsPanel(users = []) {
+    return `
+        <section class="settings-panel">
+            <div class="settings-panel-head">
+                <div>
+                    <h2>用户管理</h2>
+                    <p class="text-muted">创建和管理系统登录用户（超级管理员不在此列表中）。</p>
+                </div>
+                <button class="btn btn-primary" id="createUserBtn" type="button">添加用户</button>
+            </div>
+            <div class="users-settings-list">
+                ${
+                    users.length
+                        ? users
+                              .map(
+                                  (user) => `
+                        <div class="users-settings-item" data-user-id="${user.id}">
+                            <div>
+                                <strong>${escapeHtml(user.display_name || user.username)}</strong>
+                                <div class="text-muted">${escapeHtml(user.username)} · ${user.status === "disabled" ? "已禁用" : "正常"}</div>
+                            </div>
+                            <div class="users-settings-actions">
+                                <button class="btn btn-sm btn-light" data-action="edit-user" data-user-id="${user.id}" type="button">编辑</button>
+                                <button class="btn btn-sm btn-outline-danger" data-action="delete-user" data-user-id="${user.id}" type="button">删除</button>
+                            </div>
+                        </div>`
+                              )
+                              .join("")
+                        : `<p class="text-muted mb-0">暂无用户，点击右上角添加。</p>`
+                }
+            </div>
+        </section>
+    `;
+}
+
+function bindUsersSettingsPanel() {
+    document.getElementById("createUserBtn")?.addEventListener("click", () => {
+        openUserFormDialog().catch((error) => showError(error.message || "打开用户表单失败"));
+    });
+    document.querySelectorAll("[data-action='edit-user']").forEach((node) => {
+        node.addEventListener("click", () => {
+            openUserFormDialog(node.dataset.userId).catch((error) => showError(error.message || "打开用户表单失败"));
+        });
+    });
+    document.querySelectorAll("[data-action='delete-user']").forEach((node) => {
+        node.addEventListener("click", () => {
+            promptDeleteUser(node.dataset.userId);
+        });
+    });
+}
+
+async function openUserFormDialog(userId = null) {
+    const usersData = await api("/api/users");
+    const existing = userId ? usersData.items.find((item) => String(item.id) === String(userId)) : null;
+    editingUserFormId = userId;
+    userFormTitleEl.textContent = existing ? "编辑用户" : "添加用户";
+    userFormUsernameWrap.classList.toggle("d-none", Boolean(existing));
+    userFormPasswordConfirmWrap.classList.toggle("d-none", Boolean(existing));
+    userFormPasswordHint.classList.toggle("d-none", !existing);
+    userFormUsernameInput.value = existing?.username || "";
+    userFormDisplayNameInput.value = existing?.display_name || existing?.username || "";
+    userFormPasswordInput.value = "";
+    userFormPasswordConfirmInput.value = "";
+    resetPasswordVisibility(userFormShowPassword, [userFormPasswordInput, userFormPasswordConfirmInput]);
+    userFormPasswordInput.placeholder = existing ? "留空则不修改密码" : "设置登录密码";
+    userFormModal?.show();
+    window.setTimeout(() => {
+        (existing ? userFormDisplayNameInput : userFormUsernameInput)?.focus();
+    }, 180);
+}
+
+function assertPasswordFormat(password) {
+    if (password.length <= 1) {
+        throw new Error("密码至少 2 个字符");
+    }
+    if (!/^[A-Za-z0-9]+$/.test(password)) {
+        throw new Error("密码只能包含英文字母和数字");
+    }
+}
+
+async function saveUserForm() {
+    const displayName = userFormDisplayNameInput.value.trim();
+    const password = userFormPasswordInput.value;
+    const passwordConfirm = userFormPasswordConfirmInput.value;
+
+    if (editingUserFormId) {
+        const payload = {};
+        if (displayName) {
+            payload.display_name = displayName;
+        }
+        if (password) {
+            assertPasswordFormat(password);
+            payload.password = password;
+        }
+        if (!payload.display_name && !payload.password) {
+            throw new Error("请修改显示名称或密码");
+        }
+        await api(`/api/users/${editingUserFormId}`, {
+            method: "PATCH",
+            body: JSON.stringify(payload),
+        });
+        showSuccess("用户已更新");
+    } else {
+        const username = userFormUsernameInput.value.trim();
+        if (!username) {
+            throw new Error("用户名不能为空");
+        }
+        if (!displayName) {
+            throw new Error("显示名称不能为空");
+        }
+        if (!password) {
+            throw new Error("密码不能为空");
+        }
+        assertPasswordFormat(password);
+        if (password !== passwordConfirm) {
+            throw new Error("两次输入的密码不一致");
+        }
+        await api("/api/users", {
+            method: "POST",
+            body: JSON.stringify({ username, display_name: displayName, password }),
+        });
+        showSuccess("用户已创建");
+    }
+    editingUserFormId = null;
+    userFormModal?.hide();
+    renderSettingsPage("users");
+}
+
+function promptDeleteUser(userId) {
+    openConfirmDeleteDialog({
+        title: "删除用户",
+        message: "确定要删除该用户吗？其看板数据将一并删除。",
+        onSubmit: async () => {
+            await api(`/api/users/${userId}`, { method: "DELETE" });
+            showSuccess("用户已删除");
+            renderSettingsPage("users");
+        },
+    });
+}
+
+async function loadUsersForSettings() {
+    const data = await api("/api/users");
+    return data.items || [];
 }
 
 function renderStatusSettingsPanel(statuses) {
@@ -1216,9 +1996,19 @@ function renderFontSettingsPanel(fonts = getEditableFontsSettingsForPanel()) {
     `;
 }
 
-function renderDataTransferPanel() {
+function getOwnedBoards() {
+    return (state.boards || []).filter((board) => !board.shared);
+}
+
+function renderOrgBoardTransferBlock(options = {}) {
+    const {
+        prefix = "ownerTransfer",
+        ownerOnly = true,
+        orgDesc = "导出/导入您创建的组织下看板。导入默认合并，可选覆盖该组织下已有看板。",
+        boardDesc = "导出/导入您创建的单个看板（含画布/脑图/表格/描述数据）。",
+    } = options;
     const organizations = getOrganizations();
-    const boards = state.boards || [];
+    const boards = getOwnedBoards();
     const orgOptions = [
         `<option value="org_0">${escapeHtml(PERSONAL_BOARD_ORGANIZATION)}</option>`,
         ...organizations.map(
@@ -1230,18 +2020,67 @@ function renderDataTransferPanel() {
         : `<option value="">暂无看板</option>`;
 
     return `
+        <div class="transfer-section">
+            <h3>组织导入导出</h3>
+            <p class="transfer-desc">${orgDesc}</p>
+            <div class="transfer-field-row">
+                <label class="field-label" for="${prefix}ExportOrgSelect">选择组织</label>
+                <select id="${prefix}ExportOrgSelect" class="form-select">${orgOptions}</select>
+            </div>
+            <div class="transfer-actions">
+                <button class="btn btn-outline-primary" id="${prefix}ExportOrgBtn" type="button">导出组织 .dat</button>
+                <label class="btn btn-outline-secondary transfer-file-btn">
+                    选择组织包…
+                    <input id="${prefix}ImportOrgFile" type="file" accept=".dat,application/json,text/plain" hidden>
+                </label>
+                <select id="${prefix}ImportOrgMode" class="form-select form-select-sm transfer-mode-select">
+                    <option value="merge">合并导入</option>
+                    <option value="replace">覆盖该组织看板</option>
+                </select>
+                <button class="btn btn-primary" id="${prefix}ImportOrgBtn" type="button" disabled>校验通过后导入</button>
+            </div>
+            <div class="transfer-report" id="${prefix}ImportOrgReport"></div>
+        </div>
+
+        <div class="transfer-section">
+            <h3>看板导入导出</h3>
+            <p class="transfer-desc">${boardDesc}</p>
+            <div class="transfer-field-row">
+                <label class="field-label" for="${prefix}ExportBoardSelect">选择看板</label>
+                <select id="${prefix}ExportBoardSelect" class="form-select">${boardOptions}</select>
+            </div>
+            <div class="transfer-actions">
+                <button class="btn btn-outline-primary" id="${prefix}ExportBoardBtn" type="button" ${boards.length ? "" : "disabled"}>导出看板 .dat</button>
+                <label class="btn btn-outline-secondary transfer-file-btn">
+                    选择看板包…
+                    <input id="${prefix}ImportBoardFile" type="file" accept=".dat,application/json,text/plain" hidden>
+                </label>
+                <select id="${prefix}ImportBoardMode" class="form-select form-select-sm transfer-mode-select">
+                    <option value="merge">合并导入（自动分配新 ID）</option>
+                    <option value="replace">同 ID 覆盖</option>
+                </select>
+                <button class="btn btn-primary" id="${prefix}ImportBoardBtn" type="button" disabled>校验通过后导入</button>
+            </div>
+            <div class="transfer-report" id="${prefix}ImportBoardReport"></div>
+        </div>
+    `;
+}
+
+function renderDataTransferPanel() {
+    return `
         <div class="settings-panel">
             <h2>数据导入导出</h2>
             <p class="panel-desc">
                 支持三种 .dat 数据包：<strong>系统全量</strong>、<strong>组织</strong>、<strong>单看板</strong>。
-                文件为 UTF-8 JSON，首行魔数 <code>BFLOW1</code>，含 SHA256 校验和。导入前会先执行完整性检查。
+                文件为 UTF-8 JSON，首行魔数 <code>BFLOW1</code>，含 SHA256 校验和（v2）。导入前会先执行完整性检查。
             </p>
 
             <div class="transfer-section">
                 <h3>系统全量</h3>
                 <p class="transfer-desc">
-                    导出全部看板、列表、卡片，以及<strong>系统设置</strong>（看板状态、卡片类型、组织列表、字体设置）和 ID 计数器。
-                    导入将<strong>完全覆盖</strong>当前系统数据（含上述设置）。
+                    导出<strong>全部租户数据</strong>：超管看板、所有用户账号与各自看板、分享记录、分享索引，以及
+                    <strong>系统设置</strong>（看板状态、卡片类型、组织列表、字体设置）。
+                    导入将<strong>完全覆盖</strong>当前 Redis 中的 BoardFlow 数据（含上述全部内容）。
                 </p>
                 <div class="transfer-actions">
                     <button class="btn btn-outline-primary" id="exportSystemBtn" type="button">导出系统 .dat</button>
@@ -1254,49 +2093,13 @@ function renderDataTransferPanel() {
                 <div class="transfer-report" id="importSystemReport"></div>
             </div>
 
-            <div class="transfer-section">
-                <h3>组织</h3>
-                <p class="transfer-desc">仅导出/导入选定组织下的看板数据。导入默认合并；可选覆盖该组织下已有看板。</p>
-                <div class="transfer-field-row">
-                    <label class="field-label" for="exportOrgSelect">选择组织</label>
-                    <select id="exportOrgSelect" class="form-select">${orgOptions}</select>
-                </div>
-                <div class="transfer-actions">
-                    <button class="btn btn-outline-primary" id="exportOrgBtn" type="button">导出组织 .dat</button>
-                    <label class="btn btn-outline-secondary transfer-file-btn">
-                        选择组织包…
-                        <input id="importOrgFile" type="file" accept=".dat,application/json,text/plain" hidden>
-                    </label>
-                    <select id="importOrgMode" class="form-select form-select-sm transfer-mode-select">
-                        <option value="merge">合并导入</option>
-                        <option value="replace">覆盖该组织看板</option>
-                    </select>
-                    <button class="btn btn-primary" id="importOrgBtn" type="button" disabled>校验通过后导入</button>
-                </div>
-                <div class="transfer-report" id="importOrgReport"></div>
-            </div>
-
-            <div class="transfer-section">
-                <h3>单看板</h3>
-                <p class="transfer-desc">导出单个看板及其列表、卡片（含画布/脑图/表格/描述表格数据）。</p>
-                <div class="transfer-field-row">
-                    <label class="field-label" for="exportBoardSelect">选择看板</label>
-                    <select id="exportBoardSelect" class="form-select">${boardOptions}</select>
-                </div>
-                <div class="transfer-actions">
-                    <button class="btn btn-outline-primary" id="exportBoardBtn" type="button" ${boards.length ? "" : "disabled"}>导出看板 .dat</button>
-                    <label class="btn btn-outline-secondary transfer-file-btn">
-                        选择看板包…
-                        <input id="importBoardFile" type="file" accept=".dat,application/json,text/plain" hidden>
-                    </label>
-                    <select id="importBoardMode" class="form-select form-select-sm transfer-mode-select">
-                        <option value="merge">合并导入（自动分配新 ID）</option>
-                        <option value="replace">同 ID 覆盖</option>
-                    </select>
-                    <button class="btn btn-primary" id="importBoardBtn" type="button" disabled>校验通过后导入</button>
-                </div>
-                <div class="transfer-report" id="importBoardReport"></div>
-            </div>
+            ${renderOrgBoardTransferBlock({
+                prefix: "adminTransfer",
+                ownerOnly: false,
+                orgDesc:
+                    "导出选定组织下<strong>所有租户</strong>的看板（含超管与用户各自创建的看板），并记录看板归属。导入时按归属写回对应租户；默认合并，可选覆盖该组织下已有看板。",
+                boardDesc: "导出您创建的单个看板及其列表、卡片（含画布/脑图/表格/描述表格数据）。",
+            })}
         </div>
     `;
 }
@@ -1316,10 +2119,15 @@ function renderTransferReport(container, validation) {
         lists: "列表",
         cards: "卡片",
         organizations: "组织",
+        users: "用户",
+        shares: "分享记录",
+        tenants: "涉及租户",
+        board_owners: "看板归属",
         card_types: "卡片类型",
         board_statuses: "看板状态",
         board_title: "看板标题",
         organization: "组织名称",
+        legacy: "旧版包",
     };
 
     const statusClass = validation.valid ? "is-valid" : "is-invalid";
@@ -1372,11 +2180,14 @@ function downloadDat(url, fallbackName) {
         });
 }
 
-async function validateTransferFile(file, expectedKind) {
+async function validateTransferFile(file, { expectedKind, ownerOnly = false } = {}) {
     const formData = new FormData();
     formData.append("file", file);
     if (expectedKind) {
         formData.append("expected_kind", expectedKind);
+    }
+    if (ownerOnly) {
+        formData.append("owner_only", "1");
     }
     const response = await fetch("/api/data-transfer/validate", {
         method: "POST",
@@ -1389,12 +2200,15 @@ async function validateTransferFile(file, expectedKind) {
     return payload;
 }
 
-async function importTransferFile(file, { expectedKind, mode }) {
+async function importTransferFile(file, { expectedKind, mode, ownerOnly = false } = {}) {
     const formData = new FormData();
     formData.append("file", file);
     formData.append("mode", mode);
     if (expectedKind) {
         formData.append("expected_kind", expectedKind);
+    }
+    if (ownerOnly) {
+        formData.append("owner_only", "1");
     }
     const response = await fetch("/api/data-transfer/import", {
         method: "POST",
@@ -1407,38 +2221,30 @@ async function importTransferFile(file, { expectedKind, mode }) {
     return payload;
 }
 
-function bindDataTransferPanel() {
+function bindOrgBoardTransferBlock(options = {}) {
+    const { prefix = "ownerTransfer", ownerOnly = true } = options;
     const transferState = {
-        system: { file: null, validation: null },
         organization: { file: null, validation: null },
         board: { file: null, validation: null },
     };
 
-    const exportSystemBtn = document.getElementById("exportSystemBtn");
-    const exportOrgBtn = document.getElementById("exportOrgBtn");
-    const exportBoardBtn = document.getElementById("exportBoardBtn");
-    const exportOrgSelect = document.getElementById("exportOrgSelect");
-    const exportBoardSelect = document.getElementById("exportBoardSelect");
-
-    exportSystemBtn?.addEventListener("click", () => {
-        downloadDat("/api/data-transfer/export/system", "boardflow-system.dat")
-            .then(() => showSuccess("系统数据包已开始下载"))
-            .catch((error) => showError(error.message || "导出失败"));
-    });
-
-    exportOrgBtn?.addEventListener("click", () => {
-        const orgId = exportOrgSelect?.value;
+    document.getElementById(`${prefix}ExportOrgBtn`)?.addEventListener("click", () => {
+        const orgId = document.getElementById(`${prefix}ExportOrgSelect`)?.value;
         if (!orgId) {
             showError("请选择组织");
             return;
         }
-        downloadDat(`/api/data-transfer/export/organization/${encodeURIComponent(orgId)}`, "boardflow-org.dat")
+        const scopeQuery = ownerOnly ? "?scope=owner" : "";
+        downloadDat(
+            `/api/data-transfer/export/organization/${encodeURIComponent(orgId)}${scopeQuery}`,
+            "boardflow-org.dat"
+        )
             .then(() => showSuccess("组织数据包已开始下载"))
             .catch((error) => showError(error.message || "导出失败"));
     });
 
-    exportBoardBtn?.addEventListener("click", () => {
-        const boardId = exportBoardSelect?.value;
+    document.getElementById(`${prefix}ExportBoardBtn`)?.addEventListener("click", () => {
+        const boardId = document.getElementById(`${prefix}ExportBoardSelect`)?.value;
         if (!boardId) {
             showError("请选择看板");
             return;
@@ -1461,12 +2267,15 @@ function bindDataTransferPanel() {
             if (importBtn) {
                 importBtn.disabled = true;
             }
-            renderTransferReport(reportEl, null);
             if (!file) {
+                renderTransferReport(reportEl, null);
                 return;
             }
             try {
-                const validation = await validateTransferFile(file, kind === "system" ? "system" : kind);
+                const validation = await validateTransferFile(file, {
+                    expectedKind: kind,
+                    ownerOnly: kind === "organization" && ownerOnly,
+                });
                 transferState[kind].validation = validation;
                 renderTransferReport(reportEl, validation);
                 if (importBtn) {
@@ -1490,54 +2299,106 @@ function bindDataTransferPanel() {
                 showError("请先选择并通过校验的数据包");
                 return;
             }
-            const mode =
-                kind === "system" ? "replace" : modeSelect?.value || (kind === "organization" ? "merge" : "merge");
-            const confirmText =
-                kind === "system"
-                    ? "确定用该系统包完全覆盖当前所有数据吗？此操作不可撤销。"
-                    : kind === "organization"
-                      ? mode === "replace"
-                          ? "确定覆盖该组织下已有看板并导入新数据吗？"
-                          : "确定合并导入该组织数据包吗？"
-                      : mode === "replace"
-                        ? "确定覆盖同 ID 看板并导入吗？"
-                        : "确定合并导入该看板数据包吗？";
-
-            if (!window.confirm(confirmText)) {
-                return;
-            }
-
-            importBtn.disabled = true;
+            const mode = modeSelect?.value || "merge";
             try {
                 await importTransferFile(file, {
-                    expectedKind: kind === "system" ? "system" : kind,
+                    expectedKind: kind,
                     mode,
+                    ownerOnly: kind === "organization" && ownerOnly,
                 });
+                showSuccess("数据导入成功");
                 await loadSettings();
                 await loadBoards();
-                showSuccess("数据导入成功");
-                if (kind === "system") {
-                    renderRoute();
-                    return;
-                }
-                renderSettingsPage("data-transfer");
+                renderSettingsPage(resolveSettingsTab());
             } catch (error) {
                 showError(error.message || "导入失败");
-                importBtn.disabled = false;
             }
         });
     }
 
-    wireImport("system", "importSystemFile", "importSystemReport", "importSystemBtn");
-    wireImport("organization", "importOrgFile", "importOrgReport", "importOrgBtn", "importOrgMode");
-    wireImport("board", "importBoardFile", "importBoardReport", "importBoardBtn", "importBoardMode");
+    wireImport("organization", `${prefix}ImportOrgFile`, `${prefix}ImportOrgReport`, `${prefix}ImportOrgBtn`, `${prefix}ImportOrgMode`);
+    wireImport("board", `${prefix}ImportBoardFile`, `${prefix}ImportBoardReport`, `${prefix}ImportBoardBtn`, `${prefix}ImportBoardMode`);
 }
 
-function renderOrganizationSettingsPanel(organizations) {
+function bindDataTransferPanel() {
+    const transferState = {
+        system: { file: null, validation: null },
+    };
+
+    document.getElementById("exportSystemBtn")?.addEventListener("click", () => {
+        downloadDat("/api/data-transfer/export/system", "boardflow-system.dat")
+            .then(() => showSuccess("系统数据包已开始下载"))
+            .catch((error) => showError(error.message || "导出失败"));
+    });
+
+    const fileInput = document.getElementById("importSystemFile");
+    const reportEl = document.getElementById("importSystemReport");
+    const importBtn = document.getElementById("importSystemBtn");
+
+    fileInput?.addEventListener("change", async () => {
+        const file = fileInput.files?.[0];
+        transferState.system.file = file || null;
+        transferState.system.validation = null;
+        if (importBtn) {
+            importBtn.disabled = true;
+        }
+        renderTransferReport(reportEl, null);
+        if (!file) {
+            return;
+        }
+        try {
+            const validation = await validateTransferFile(file, { expectedKind: "system" });
+            transferState.system.validation = validation;
+            renderTransferReport(reportEl, validation);
+            if (importBtn) {
+                importBtn.disabled = !validation.valid;
+            }
+        } catch (error) {
+            renderTransferReport(reportEl, {
+                valid: false,
+                kind: "system",
+                errors: [error.message || "校验失败"],
+                warnings: [],
+                summary: {},
+            });
+        }
+    });
+
+    importBtn?.addEventListener("click", async () => {
+        const file = transferState.system.file;
+        const validation = transferState.system.validation;
+        if (!file || !validation?.valid) {
+            showError("请先选择并通过校验的数据包");
+            return;
+        }
+        if (!window.confirm("确定用该系统包完全覆盖当前所有数据吗？此操作不可撤销。")) {
+            return;
+        }
+        importBtn.disabled = true;
+        try {
+            await importTransferFile(file, { expectedKind: "system", mode: "replace" });
+            await loadSettings();
+            await loadBoards();
+            showSuccess("数据导入成功");
+            renderRoute();
+        } catch (error) {
+            showError(error.message || "导入失败");
+            importBtn.disabled = false;
+        }
+    });
+
+    bindOrgBoardTransferBlock({ prefix: "adminTransfer", ownerOnly: false });
+}
+
+function renderOrganizationSettingsPanel(organizations, isPersonal = false) {
     return `
         <div class="settings-panel">
-            <h2>所属组织</h2>
-            <p class="panel-desc">「个人看板」为内置默认选项。此处维护公司/团队组织，保存后可在新建或编辑看板时选择（REDIS_SETTINGS_KEY:organizations）。</p>
+            <h2>${isPersonal ? "我的项目" : "所属组织"}</h2>
+            <p class="panel-desc">${
+                isPersonal
+                    ? "此处维护您自己创建的项目组织，仅对您可见。不同用户/管理员之间组织名称允许重复，但在您名下不可重复。保存后可在新建或编辑看板时选择。"
+                    : "「个人看板」为内置默认选项。此处维护超管创建的组织；不同账户之间组织名称允许重复。保存后可在新建或编辑看板时选择。"
+            }</p>
             <div class="table-responsive">
                 <table class="organization-settings-table">
                     <thead>
@@ -1558,8 +2419,18 @@ function renderOrganizationSettingsPanel(organizations) {
             </div>
             <div class="settings-toolbar">
                 <button class="btn btn-outline-primary" id="addOrganizationRowBtn" type="button">+ 添加组织</button>
-                <button class="btn btn-primary" id="saveOrganizationSettingsBtn" type="button">保存组织设置</button>
+                <button class="btn btn-primary" id="saveOrganizationSettingsBtn" type="button" data-personal-orgs="${
+                    isPersonal ? "1" : "0"
+                }">保存组织设置</button>
             </div>
+            ${renderOrgBoardTransferBlock({
+                prefix: isPersonal ? "personalTransfer" : "orgSettingsTransfer",
+                ownerOnly: true,
+                orgDesc: isPersonal
+                    ? "导出/导入您名下组织中的看板。仅组织创建者可操作。"
+                    : "导出/导入超管名下组织中的看板（不含其他用户同名组织）。",
+                boardDesc: "导出/导入您创建的看板。分享的看板不在此列表中。",
+            })}
         </div>
     `;
 }
@@ -1615,13 +2486,37 @@ function renderSettingsPage(activeTab = resolveSettingsTab()) {
     state.currentBoardId = null;
     state.currentBoard = null;
     clearError();
+    if (activeTab === "users") {
+        loadUsersForSettings()
+            .then((users) => {
+                appView.innerHTML = `
+        <section class="settings-page">
+            <div class="page-head">
+                <div>
+                    <a class="back-link d-inline-block mb-2" href="${getBoardHubBackHref()}">← 返回看板列表</a>
+                    <h1>设置</h1>
+                </div>
+            </div>
+            <div class="settings-layout">
+                ${renderSettingsSidebar(activeTab)}
+                <div class="settings-main">
+                    ${renderUsersSettingsPanel(users)}
+                </div>
+            </div>
+        </section>
+    `;
+                bindUsersSettingsPanel();
+            })
+            .catch((error) => showError(error.message || "加载用户失败"));
+        return;
+    }
     const statuses = getBoardStatuses();
     const organizations = getOrganizations();
     const panelHtml =
         activeTab === "data-transfer"
             ? renderDataTransferPanel()
-            : activeTab === "organizations"
-              ? renderOrganizationSettingsPanel(organizations)
+            : activeTab === "organizations" || activeTab === "my-organizations"
+              ? renderOrganizationSettingsPanel(organizations, activeTab === "my-organizations")
               : activeTab === "fonts"
                 ? renderFontSettingsPanel()
                 : renderStatusSettingsPanel(statuses);
@@ -1653,10 +2548,14 @@ function renderSettingsPage(activeTab = resolveSettingsTab()) {
         return;
     }
 
-    if (activeTab === "organizations") {
+    if (activeTab === "organizations" || activeTab === "my-organizations") {
         document.getElementById("addOrganizationRowBtn").addEventListener("click", addOrganizationSettingsRow);
         document.getElementById("saveOrganizationSettingsBtn").addEventListener("click", saveOrganizationSettings);
         bindOrganizationSettingsRows();
+        bindOrgBoardTransferBlock({
+            prefix: activeTab === "my-organizations" ? "personalTransfer" : "orgSettingsTransfer",
+            ownerOnly: true,
+        });
         return;
     }
 
@@ -1832,15 +2731,18 @@ async function saveOrganizationSettings() {
         return;
     }
 
+    const isPersonal = document.getElementById("saveOrganizationSettingsBtn")?.dataset.personalOrgs === "1";
+    const endpoint = isPersonal ? "/api/settings/my-organizations" : "/api/settings/organizations";
+
     try {
-        const result = await api("/api/settings/organizations", {
+        const result = await api(endpoint, {
             method: "PUT",
             body: JSON.stringify({ organizations }),
         });
         state.settings = { ...state.settings, ...result.settings };
         await loadBoards();
-        renderSettingsPage("organizations");
-        showSuccess("组织列表已保存");
+        renderSettingsPage(isPersonal ? "my-organizations" : "organizations");
+        showSuccess(isPersonal ? "我的项目组织已保存" : "组织列表已保存");
     } catch (error) {
         showError(error.message || "保存组织失败");
     }
@@ -1853,13 +2755,17 @@ async function loadBoards() {
 
 function renderBoardList() {
     clearError();
-    renderBoardListContent();
+    loadSettings()
+        .then(() => renderBoardListContent())
+        .catch((error) => showError(error.message || "加载设置失败"));
 }
 
 function renderBoardHubSidebar(hub = state.boardHub) {
     const organizations = getOrganizations();
+    const sharedOrganizationGroups = getSharedOrganizationNavGroups();
     const mineExpanded = state.boardHubGroups.mine;
     const projectsExpanded = state.boardHubGroups.projects;
+    const sharedProjectsExpanded = state.boardHubGroups.sharedProjects;
 
     return `
         <aside class="board-hub-sidebar">
@@ -1919,10 +2825,42 @@ function renderBoardHubSidebar(hub = state.boardHub) {
                         `
                                       )
                                       .join("")
-                                : `<span class="board-hub-nav-empty">暂无组织，请先在设置中添加</span>`
+                                : `<span class="board-hub-nav-empty">暂无项目，可在设置中维护</span>`
                         }
                     </div>
                 </div>
+
+                ${
+                    sharedOrganizationGroups.length
+                        ? `<div class="board-hub-nav-group ${sharedProjectsExpanded ? "expanded" : ""}">
+                    <button class="board-hub-nav-group-head" data-toggle-hub-group="sharedProjects" type="button">
+                        <span class="board-hub-nav-group-label">
+                            <span class="board-hub-nav-icon" aria-hidden="true">⇄</span>
+                            <span>共享项目</span>
+                        </span>
+                        <span class="board-hub-nav-caret" aria-hidden="true">▾</span>
+                    </button>
+                    <div class="board-hub-nav-group-body">
+                        ${sharedOrganizationGroups
+                            .map(
+                                (group) => `
+                            <a
+                                class="board-hub-nav-subitem ${
+                                    isSharedOrganizationNavActive(group, hub) ? "active" : ""
+                                }"
+                                href="${buildBoardHubHref("shared-org", group.org_name, {
+                                    ownerTenantType: group.owner_tenant_type,
+                                    ownerTenantId: group.owner_tenant_id,
+                                    orgName: group.org_name,
+                                })}"
+                            >${escapeHtml(formatSharedOrgNavLabel(group))}</a>
+                        `
+                            )
+                            .join("")}
+                    </div>
+                </div>`
+                        : ""
+                }
             </nav>
         </aside>
     `;
@@ -1937,8 +2875,11 @@ function renderBoardHubHeader(hub = state.boardHub) {
               ? "◉"
               : hub.scope === "workbench"
                 ? "▦"
-                : "▤";
+                : hub.scope === "shared-org"
+                  ? "⇄"
+                  : "▤";
     const sortBy = hub.sortBy;
+    const canCreateBoard = hub.scope !== "shared-org";
 
     return `
         <header class="board-hub-header">
@@ -1966,7 +2907,11 @@ function renderBoardHubHeader(hub = state.boardHub) {
                     data-hub-sort="custom"
                     type="button"
                 >自定义</button>
-                <button class="board-hub-tool-btn board-hub-tool-icon" id="createBoardHubBtn" type="button" title="新建看板">+</button>
+                ${
+                    canCreateBoard
+                        ? `<button class="board-hub-tool-btn board-hub-tool-icon" id="createBoardHubBtn" type="button" title="新建看板">+</button>`
+                        : ""
+                }
                 <button class="board-hub-tool-btn board-hub-tool-icon" type="button" title="更多">⋯</button>
             </div>
         </header>
@@ -1988,16 +2933,22 @@ function renderBoardStarButton(boardId, { className = "board-hub-star" } = {}) {
 }
 
 function renderBoardHubCard(board) {
-    return `
-        <article class="board-hub-card" data-board-id="${board.id}">
-            <h3 class="board-hub-card-title">${escapeHtml(board.title)}</h3>
-            <div class="board-hub-card-footer">
-                <div class="board-hub-card-hover-actions">
+    const sharedBadge = board.shared
+        ? `<span class="board-share-badge">${board.share_permissions?.edit ? "可编辑分享" : "只读分享"}</span>`
+        : "";
+    const hoverActions = board.shared
+        ? `<div class="board-hub-card-hover-actions"><span class="text-muted">${escapeHtml(board.owner_display_name || "好友分享")}</span></div>`
+        : `<div class="board-hub-card-hover-actions">
                     <button class="btn btn-sm btn-light" data-action="edit-board" data-board-id="${board.id}" type="button">编辑</button>
                     <button class="btn btn-sm btn-outline-light" data-action="delete-board" data-board-id="${board.id}" type="button">删除</button>
-                </div>
+                </div>`;
+    return `
+        <article class="board-hub-card ${board.shared ? "is-shared-board" : ""}" data-board-id="${board.id}"${board.shared ? ` data-owner-tenant-type="${escapeHtml(board.owner_tenant_type || "")}" data-owner-tenant-id="${escapeHtml(board.owner_tenant_id || "")}"` : ""}>
+            <h3 class="board-hub-card-title">${escapeHtml(board.title)}${sharedBadge}</h3>
+            <div class="board-hub-card-footer">
+                ${hoverActions}
                 <div class="board-hub-card-actions">
-                    ${renderBoardStarButton(board.id)}
+                    ${board.shared ? "" : renderBoardStarButton(board.id)}
                 </div>
             </div>
         </article>
@@ -2010,6 +2961,14 @@ function renderBoardHubEmpty(hub = state.boardHub) {
             <div class="board-hub-empty">
                 <h3>暂无星标看板</h3>
                 <p>在看板卡片右下角点击 ☆，或将看板页右上角的星标点亮，即可加入星标看板。</p>
+            </div>
+        `;
+    }
+    if (hub.scope === "shared-org") {
+        return `
+            <div class="board-hub-empty">
+                <h3>暂无共享看板</h3>
+                <p>当其他用户向您分享看板后，会出现在左侧「共享项目」列表中。</p>
             </div>
         `;
     }
@@ -2053,18 +3012,18 @@ function renderBoardListContent() {
     state.currentBoard = null;
     const hub = state.boardHub;
     const visibleBoards = sortBoardsForHub(filterBoardsForHub(state.boards, hub), hub.sortBy);
+    const isSharedScope = hub.scope === "shared-org";
+    const ownBoards = isSharedScope ? visibleBoards : visibleBoards.filter((board) => !board.shared);
+    const sectionTitle = isSharedScope ? "共享看板" : ownBoards.length ? "我的看板" : "";
 
     appView.innerHTML = `
         <section class="board-hub-page">
             ${renderBoardHubSidebar(hub)}
             <div class="board-hub-main">
                 ${renderBoardHubHeader(hub)}
+                ${sectionTitle ? `<h3 class="board-hub-section-title">${sectionTitle}</h3>` : ""}
                 <div class="board-hub-grid" id="boardGrid">
-                    ${
-                        visibleBoards.length
-                            ? visibleBoards.map(renderBoardHubCard).join("")
-                            : renderBoardHubEmpty(hub)
-                    }
+                    ${ownBoards.length ? ownBoards.map(renderBoardHubCard).join("") : renderBoardHubEmpty(hub)}
                 </div>
             </div>
         </section>
@@ -2077,7 +3036,13 @@ function renderBoardListContent() {
             if (event.target.closest("[data-action]")) {
                 return;
             }
-            location.hash = `#/board/${node.dataset.boardId}`;
+            const ownerType = node.dataset.ownerTenantType || null;
+            const ownerId = node.dataset.ownerTenantId || null;
+            let href = `#/board/${node.dataset.boardId}`;
+            if (ownerType && ownerId) {
+                href += `?owner_tenant_type=${encodeURIComponent(ownerType)}&owner_tenant_id=${encodeURIComponent(ownerId)}`;
+            }
+            location.hash = href;
         });
     });
     document.querySelectorAll("[data-action='toggle-star']").forEach((node) => {
@@ -2101,15 +3066,9 @@ function renderBoardListContent() {
         });
     });
     document.querySelectorAll("[data-action='delete-board']").forEach((node) => {
-        node.addEventListener("click", async (event) => {
+        node.addEventListener("click", (event) => {
             event.stopPropagation();
-            if (!confirm("确定删除该看板吗？")) {
-                return;
-            }
-            await api(`/api/boards/${node.dataset.boardId}`, { method: "DELETE" });
-            showSuccess("看板已删除");
-            await loadBoards();
-            renderBoardListContent();
+            promptDeleteBoard(node.dataset.boardId);
         });
     });
 }
@@ -2166,11 +3125,26 @@ function bindBoardViewTabs() {
     });
 }
 
-async function openBoard(boardId, cardId = null) {
+async function openBoard(boardId, cardId = null, ownerTenantType = null, ownerTenantId = null) {
     try {
-        const data = await api(`/api/boards/${boardId}`);
+        const boardMeta = findBoardById(boardId, ownerTenantType, ownerTenantId);
+        const query =
+            boardMeta?.shared && boardMeta.owner_tenant_type && boardMeta.owner_tenant_id
+                ? `?owner_tenant_type=${encodeURIComponent(boardMeta.owner_tenant_type)}&owner_tenant_id=${encodeURIComponent(boardMeta.owner_tenant_id)}`
+                : ownerTenantType && ownerTenantId
+                  ? `?owner_tenant_type=${encodeURIComponent(ownerTenantType)}&owner_tenant_id=${encodeURIComponent(ownerTenantId)}`
+                  : "";
+        const data = await api(`/api/boards/${boardId}${query}`);
         state.currentBoardId = boardId;
         state.currentBoard = data;
+        state.currentBoardAccess = data.shared
+            ? {
+                  shared: true,
+                  permissions: data.share_permissions || { view: true, edit: false },
+                  owner_tenant_type: data.owner_tenant_type,
+                  owner_tenant_id: data.owner_tenant_id,
+              }
+            : null;
         state.currentBoardView = loadBoardViewPreference(boardId);
         clearError();
         renderBoardPage();
@@ -2194,7 +3168,19 @@ async function openBoard(boardId, cardId = null) {
 
 function renderBoardPage() {
     const { board, lists, settings } = state.currentBoard;
-    state.settings = { ...state.settings, ...settings };
+    if (settings) {
+        const { organizations: _orgs, shared_boards: _sharedBoards, shared_org_index: _sharedOrgIndex, ...sharedSettings } = settings;
+        state.settings = { ...state.settings, ...sharedSettings };
+        if (state.authUser?.is_super_admin) {
+            state.settings.organizations = _orgs || state.settings.organizations || [];
+        }
+        if (_sharedBoards) {
+            state.settings.shared_boards = _sharedBoards;
+        }
+        if (_sharedOrgIndex) {
+            state.settings.shared_org_index = _sharedOrgIndex;
+        }
+    }
     const dateRange = formatDateRange(board.start_date, board.end_date);
     const activeView = state.currentBoardView || "kanban";
     const isEditorView = isEditorBoardView(activeView);
@@ -2206,7 +3192,8 @@ function renderBoardPage() {
                     <a class="back-link" href="${getBoardHubBackHref()}">← 返回看板列表</a>
                     <div class="toolbar-actions">
                         ${renderBoardStarButton(board.id, { className: "board-toolbar-star" })}
-                        <button class="btn btn-sm btn-light" id="editCurrentBoardBtn" type="button">编辑看板</button>
+                        ${!isBoardReadOnly() ? `<button class="btn btn-sm btn-light" id="shareCurrentBoardBtn" type="button">分享</button>` : ""}
+                        ${!isBoardReadOnly() ? `<button class="btn btn-sm btn-light" id="editCurrentBoardBtn" type="button">编辑看板</button>` : `<span class="badge bg-secondary">只读分享</span>`}
                     </div>
                 </div>
                 <div class="board-title-block">
@@ -2225,46 +3212,54 @@ function renderBoardPage() {
             <div class="kanban-scroll">
                 <div class="kanban-board ${activeView === "canvas" ? "canvas-mode" : ""} ${activeView === "mindmap" ? "mindmap-mode" : ""} ${activeView === "table" ? "table-mode" : ""}" id="kanbanBoard">
                     ${lists.map((list) => renderKanbanList(list, settings, { viewMode: activeView })).join("")}
-                    <div class="add-list-column">
+                    ${isBoardReadOnly() ? "" : `<div class="add-list-column">
                         <button class="add-list-btn" data-action="add-list" id="addListBtn" type="button">+ 添加列表</button>
-                    </div>
+                    </div>`}
                 </div>
             </div>
         </section>
     `;
 
-    document.getElementById("editCurrentBoardBtn").addEventListener("click", () => {
+    document.getElementById("editCurrentBoardBtn")?.addEventListener("click", () => {
         openBoardForm(board.id).catch((error) => showError(error.message || "打开看板表单失败"));
+    });
+    document.getElementById("shareCurrentBoardBtn")?.addEventListener("click", () => {
+        openBoardShareModal().catch((error) => showError(error.message || "打开分享失败"));
     });
     bindBoardStatusDropdown();
     bindBoardOrgDropdown();
     bindBoardViewTabs();
-    if (!isEditorView) {
+    if (!isEditorView && !isBoardReadOnly()) {
         initSortables();
     }
 }
 
 function renderKanbanList(list, settings, { viewMode = "kanban" } = {}) {
+    const readOnly = isBoardReadOnly();
     return `
         <section class="kanban-list" data-list-id="${list.id}">
             <div class="list-header">
                 <div>
                     <h3>${escapeHtml(list.title)}<span class="list-count">${list.cards.length}</span></h3>
                 </div>
-                <div class="list-menu-dropdown">
+                ${
+                    readOnly
+                        ? ""
+                        : `<div class="list-menu-dropdown">
                     <button class="list-menu-btn" data-action="toggle-list-menu" data-list-id="${list.id}" type="button" title="列表菜单">☰</button>
                     <div class="list-menu-panel" data-list-menu="${list.id}">
-                        <button class="list-menu-option" data-action="rename-list" data-list-id="${list.id}" type="button">重命名</button>
+                        <button class="list-menu-option" data-action="list-settings" data-list-id="${list.id}" type="button">设置</button>
                         <button class="list-menu-option list-menu-option-danger" data-action="delete-list" data-list-id="${list.id}" type="button">删除列表</button>
                     </div>
-                </div>
+                </div>`
+                }
             </div>
             <div class="list-cards" data-list-id="${list.id}">
                 ${list.cards.map((card) => renderKanbanCard(card, settings, { viewMode })).join("")}
             </div>
-            <div class="list-footer">
+            ${readOnly ? "" : `<div class="list-footer">
                 <button class="add-card-btn" data-action="add-card" data-list-id="${list.id}" type="button">+ 添加卡片</button>
-            </div>
+            </div>`}
         </section>
     `;
 }
@@ -2336,12 +3331,12 @@ function handleBoardPageClick(event) {
         return;
     }
 
-    const renameListBtn = event.target.closest("[data-action='rename-list']");
-    if (renameListBtn) {
+    const listSettingsBtn = event.target.closest("[data-action='list-settings']");
+    if (listSettingsBtn) {
         event.preventDefault();
         event.stopPropagation();
         closeAllListMenus();
-        promptRenameList(renameListBtn.dataset.listId);
+        openListSettingsDialog(listSettingsBtn.dataset.listId);
         return;
     }
 
@@ -2488,10 +3483,143 @@ function findList(listId) {
     return state.currentBoard?.lists.find((item) => String(item.id) === String(listId)) || null;
 }
 
-function openConfirmDeleteDialog({ title, message, onSubmit }) {
+function findListForCard(card) {
+    if (!card) {
+        return null;
+    }
+    if (card.list_id) {
+        return findList(card.list_id);
+    }
+    for (const list of state.currentBoard?.lists || []) {
+        if (list.cards?.some((item) => String(item.id) === String(card.id))) {
+            return list;
+        }
+    }
+    return null;
+}
+
+function resolveListCardSections(list) {
+    const sections = list?.card_sections;
+    return {
+        show_checklist: sections?.show_checklist !== false,
+        show_comments: sections?.show_comments !== false,
+    };
+}
+
+function applyCardDetailSections(sections) {
+    const showChecklist = sections?.show_checklist !== false;
+    const showComments = sections?.show_comments !== false;
+    document.getElementById("cardChecklistSection")?.classList.toggle("is-hidden", !showChecklist);
+    document.getElementById("cardCommentsSection")?.classList.toggle("is-hidden", !showComments);
+}
+
+function openListSettingsDialog(listId) {
+    const list = findList(listId);
+    if (!list) {
+        return;
+    }
+    editingListSettingsId = listId;
+    const sections = resolveListCardSections(list);
+    listSettingsTitleEl.textContent = "列表设置";
+    listSettingsTitleInput.value = list.title || "";
+    listSettingsShowChecklist.checked = sections.show_checklist;
+    listSettingsShowComments.checked = sections.show_comments;
+    listSettingsModal.show();
+}
+
+async function saveListSettings() {
+    if (!editingListSettingsId || !state.currentBoardId) {
+        return;
+    }
+    const title = listSettingsTitleInput.value.trim();
+    if (!title) {
+        showError("列表名称不能为空");
+        return;
+    }
+    const payload = {
+        title,
+        card_sections: {
+            show_checklist: listSettingsShowChecklist.checked,
+            show_comments: listSettingsShowComments.checked,
+        },
+    };
+    const result = await api(`/api/boards/${state.currentBoardId}/lists/${editingListSettingsId}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+    });
+    const list = findList(editingListSettingsId);
+    if (list) {
+        list.title = result.item?.title || title;
+        list.card_sections = result.item?.card_sections || payload.card_sections;
+    }
+    if (state.editingCard) {
+        const cardList = findListForCard(state.editingCard);
+        if (cardList && String(cardList.id) === String(editingListSettingsId)) {
+            applyCardDetailSections(resolveListCardSections(list));
+        }
+    }
+    editingListSettingsId = null;
+    listSettingsModal.hide();
+    showSuccess("列表设置已保存");
+    await openBoard(state.currentBoardId);
+}
+
+function createDeleteMathChallenge() {
+    const a = Math.floor(Math.random() * 9) + 1;
+    const b = Math.floor(Math.random() * 9) + 1;
+    return { question: `${a} + ${b} = ?`, answer: a + b };
+}
+
+function updateConfirmDeleteSubmitState() {
+    if (confirmDeleteMathAnswer === null) {
+        confirmDeleteSubmitBtn.disabled = false;
+        return;
+    }
+    const value = Number.parseInt(confirmDeleteConfirmInput.value.trim(), 10);
+    confirmDeleteSubmitBtn.disabled = value !== confirmDeleteMathAnswer;
+}
+
+function resetConfirmDeleteState() {
+    confirmDeleteSubmitHandler = null;
+    confirmDeleteMathAnswer = null;
+    if (confirmDeleteConfirmWrap) {
+        confirmDeleteConfirmWrap.hidden = true;
+    }
+    if (confirmDeleteConfirmInput) {
+        confirmDeleteConfirmInput.value = "";
+        confirmDeleteConfirmInput.oninput = null;
+    }
+    if (confirmDeleteMathQuestionEl) {
+        confirmDeleteMathQuestionEl.textContent = "";
+    }
+    if (confirmDeleteSubmitBtn) {
+        confirmDeleteSubmitBtn.disabled = false;
+    }
+}
+
+function openConfirmDeleteDialog({ title, message, onSubmit, requireMathChallenge = true }) {
     confirmDeleteTitleEl.textContent = title;
     confirmDeleteMessageEl.innerHTML = message;
     confirmDeleteSubmitHandler = onSubmit;
+    if (requireMathChallenge && confirmDeleteConfirmWrap && confirmDeleteConfirmInput && confirmDeleteMathQuestionEl) {
+        const challenge = createDeleteMathChallenge();
+        confirmDeleteMathAnswer = challenge.answer;
+        confirmDeleteConfirmWrap.hidden = false;
+        confirmDeleteMathQuestionEl.textContent = challenge.question;
+        confirmDeleteConfirmInput.value = "";
+        confirmDeleteSubmitBtn.disabled = true;
+        confirmDeleteConfirmInput.oninput = updateConfirmDeleteSubmitState;
+        confirmDeleteModal.show();
+        window.setTimeout(() => confirmDeleteConfirmInput.focus(), 180);
+        return;
+    }
+    confirmDeleteMathAnswer = null;
+    if (confirmDeleteConfirmWrap) {
+        confirmDeleteConfirmWrap.hidden = true;
+    }
+    if (confirmDeleteSubmitBtn) {
+        confirmDeleteSubmitBtn.disabled = false;
+    }
     confirmDeleteModal.show();
 }
 
@@ -2508,31 +3636,44 @@ async function submitConfirmDelete() {
     } catch (error) {
         showError(error.message || "操作失败");
     } finally {
-        submitBtn.disabled = false;
+        if (confirmDeleteMathAnswer === null) {
+            submitBtn.disabled = false;
+        } else {
+            updateConfirmDeleteSubmitState();
+        }
     }
 }
 
-function promptRenameList(listId) {
-    const list = findList(listId);
-    openQuickCreateDialog({
-        title: "重命名列表",
-        placeholder: "请输入新的列表名称",
-        defaultValue: list?.title || "",
-        onSubmit: async (title) => {
-            await api(`/api/boards/${state.currentBoardId}/lists/${listId}`, {
-                method: "PATCH",
-                body: JSON.stringify({ title }),
-            });
-            showSuccess("列表已更新");
-            await openBoard(state.currentBoardId);
+function promptDeleteBoard(boardId) {
+    const board = findBoardById(boardId);
+    if (!board) {
+        showError("看板不存在或已删除");
+        return;
+    }
+    openConfirmDeleteDialog({
+        title: "删除看板",
+        message: `确定要删除看板 <strong>${escapeHtml(board.title)}</strong> 吗？看板内的所有列表和卡片将一并删除。`,
+        onSubmit: async () => {
+            await api(`/api/boards/${boardId}`, { method: "DELETE" });
+            if (String(state.currentBoardId) === String(boardId)) {
+                state.currentBoardId = null;
+                state.currentBoard = null;
+                location.hash = "#/";
+            }
+            showSuccess("看板已删除");
+            await loadBoards();
+            renderBoardListContent();
         },
     });
 }
 
-function promptDeleteList(listId) {
+function promptDeleteList(listId, { fromSettings = false } = {}) {
     const list = findList(listId);
     if (!list) {
         return;
+    }
+    if (fromSettings) {
+        listSettingsModal.hide();
     }
     const cardCount = list.cards?.length || 0;
     const cardHint =
@@ -2546,6 +3687,7 @@ function promptDeleteList(listId) {
             await api(`/api/boards/${state.currentBoardId}/lists/${listId}`, {
                 method: "DELETE",
             });
+            editingListSettingsId = null;
             showSuccess("列表已删除");
             await openBoard(state.currentBoardId);
         },
@@ -2589,27 +3731,18 @@ function openCardModal(cardId) {
     cardTitleInput.value = card.title || "";
     pendingDescriptionContent = card.description || "";
     pendingDescriptionMode = resolveCardDescriptionMode(card);
+    descriptionInteractionMode = "view";
     if (cardDescriptionModeSelect) {
         cardDescriptionModeSelect.value = pendingDescriptionMode;
     }
-    if (pendingDescriptionMode === "markdown") {
-        if (cardDescriptionMarkdownInput) {
-            cardDescriptionMarkdownInput.value = pendingDescriptionContent;
-        }
-        applyDescriptionModeUI("markdown");
-        syncMarkdownPreview();
-    } else {
-        applyDescriptionModeUI("richtext");
-    }
+    applyDescriptionModeUI(pendingDescriptionMode);
+    applyDescriptionInteractionUI("view");
+    const cardList = findListForCard(card);
+    applyCardDetailSections(resolveListCardSections(cardList));
     renderChecklist(card.checklist || []);
     renderComments(card.comments || []);
     commentInput.value = "";
     cardModal.show();
-    requestAnimationFrame(() => {
-        if (pendingDescriptionMode === "richtext") {
-            mountCardDescriptionEditor();
-        }
-    });
 }
 
 function getEditingChecklist() {
@@ -3139,6 +4272,7 @@ async function saveBoardForm() {
                 body: JSON.stringify(payload),
             });
             boardFormModal.hide();
+            await loadSettings();
             await loadBoards();
             showSuccess("看板已更新");
             if (state.currentBoardId && String(state.currentBoardId) === String(state.editingBoardId)) {
@@ -3154,6 +4288,7 @@ async function saveBoardForm() {
             body: JSON.stringify(payload),
         });
         boardFormModal.hide();
+        await loadSettings();
         await loadBoards();
         const created = state.boards.find((item) => String(item.id) === String(result.item.id));
         if (!created) {
@@ -3296,11 +4431,17 @@ async function performSearch(keyword) {
 }
 
 async function api(url, options = {}) {
+    const headers = {
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+    };
+    if (state.currentBoardAccess?.shared && String(url).includes("/api/boards/")) {
+        headers["X-Board-Owner-Type"] = state.currentBoardAccess.owner_tenant_type;
+        headers["X-Board-Owner-Id"] = state.currentBoardAccess.owner_tenant_id;
+    }
     const response = await fetch(url, {
-        headers: {
-            "Content-Type": "application/json",
-            ...(options.headers || {}),
-        },
+        credentials: "same-origin",
+        headers,
         ...options,
     });
     const data = await response.json().catch(() => ({}));

@@ -954,7 +954,7 @@ def create_storage(config: dict[str, Any]) -> JsonStorage | RedisStorage | Quick
     if redis_url:
         redis_storage = RedisStorage(
             redis_url,
-            config.get("REDIS_KEY_PREFIX", "jjob:boardflow:state"),
+            config.get("REDIS_KEY_PREFIX", "jjob:boardflow"),
             float(config.get("REDIS_TIMEOUT_SECONDS", 5)),
             settings_key=config.get("REDIS_SETTINGS_KEY", "jjob:boardflow:settings"),
         )

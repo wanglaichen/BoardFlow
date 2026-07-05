@@ -1,15 +1,15 @@
 <!DOCTYPE html>
-
 <html lang="zh-CN">
-
 <head>
-
     <meta charset="UTF-8">
-
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-
     <title>{{ card_title }} - {{ editor_key }}</title>
-
+    <link rel="stylesheet" href="{{ url_for('static', filename='apps/' ~ static_app ~ '/app.css') }}">
+</head>
+<body
+    data-board-id="{{ board_id }}"
+    data-card-id="{{ card_id }}"
+    data-card-title="{{ card_title }}"
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/luckysheet/plugins/css/pluginsCss.css') }}">
 
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/luckysheet/plugins/plugins.css') }}">
