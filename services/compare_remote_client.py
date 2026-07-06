@@ -196,15 +196,20 @@ class CompareRemoteClient:
         target_board_id: str | None = None,
         mode: str = "replace",
     ) -> dict[str, Any]:
-        return self._request_json(
-            f"/api/federation/accounts/{tenant_type}/{tenant_id}/boards/sync",
-            method="POST",
-            body={
-                "payload": sync_payload,
-                "target_board_id": target_board_id,
-                "mode": mode,
-            },
-        )
+        body = {
+            "payload": sync_payload,
+            "target_board_id": target_board_id,
+            "mode": mode,
+        }
+        primary_path = f"/api/federation/accounts/{tenant_type}/{tenant_id}/boards/sync"
+        fallback_path = f"/api/federation/accounts/{tenant_type}/{tenant_id}/board-sync"
+        try:
+            return self._request_json(primary_path, method="POST", body=body)
+        except CompareRemoteError as error:
+            message = str(error)
+            if "404" not in message:
+                raise
+            return self._request_json(fallback_path, method="POST", body=body)
 
     def load_board_compare_snapshot(
         self,

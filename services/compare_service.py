@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import threading
 import time
 import uuid
@@ -69,6 +70,24 @@ def _normalize_pairs(raw_pairs: Any) -> list[dict[str, dict[str, str]]]:
 
 def _account_key(account: dict[str, Any]) -> tuple[str, str]:
     return (str(account.get("tenant_type") or ""), str(account.get("tenant_id") or ""))
+
+
+def _account_map_key(tenant_type: str, tenant_id: str) -> str:
+    return f"{tenant_type}:{tenant_id}"
+
+
+def _lookup_remote_account(
+    account_remote_map: dict[Any, Any],
+    tenant_type: str,
+    tenant_id: str,
+) -> dict[str, Any] | None:
+    string_key = _account_map_key(tenant_type, tenant_id)
+    if string_key in account_remote_map:
+        value = account_remote_map.get(string_key)
+        return value if isinstance(value, dict) else None
+    tuple_key = (tenant_type, tenant_id)
+    value = account_remote_map.get(tuple_key)
+    return value if isinstance(value, dict) else None
 
 
 def _format_remote_sync_error(error: CompareRemoteError) -> str:
@@ -270,6 +289,7 @@ class CompareService:
         with self._lock:
             self._purge_expired_sessions()
             self._sessions[session_id] = session
+            self._persist_session(session)
 
         return {
             "session_id": session_id,
@@ -289,7 +309,10 @@ class CompareService:
 
     def delete_session(self, session_id: str) -> bool:
         with self._lock:
-            return self._sessions.pop(session_id, None) is not None
+            existed = self._sessions.pop(session_id, None) is not None
+        if existed and self._can_persist_sessions():
+            self.storage._redis().client.delete(self._session_redis_key(session_id))
+        return existed
 
     def _public_session(self, session: dict[str, Any]) -> dict[str, Any]:
         progress = copy.deepcopy(session.get("progress") or {})
@@ -412,8 +435,10 @@ class CompareService:
 
         queued = queued_pairs[pair_index]
         account_remote_map = progress.get("account_remote_map") or {}
-        remote_account = account_remote_map.get(
-            _account_key({"tenant_type": queued.get("tenant_type"), "tenant_id": queued.get("tenant_id")}),
+        remote_account = _lookup_remote_account(
+            account_remote_map,
+            str(queued.get("tenant_type") or ""),
+            str(queued.get("tenant_id") or ""),
         ) or {
             "tenant_type": queued.get("tenant_type"),
             "tenant_id": queued.get("tenant_id"),
@@ -631,19 +656,75 @@ class CompareService:
             "account_pair": copy.deepcopy(account_pairs[account_pair_index]),
         }
 
+    def _session_redis_key(self, session_id: str) -> str:
+        prefix = (self.config.get("REDIS_KEY_PREFIX") or "jjob:boardflow").strip()
+        return f"{prefix}:compare:session:{session_id}"
+
+    def _can_persist_sessions(self) -> bool:
+        return hasattr(self.storage, "_is_redis") and self.storage._is_redis()
+
+    def _normalize_session_for_storage(self, session: dict[str, Any]) -> dict[str, Any]:
+        payload = copy.deepcopy(session)
+        progress = payload.get("progress") or {}
+        account_remote_map = progress.get("account_remote_map") or {}
+        if account_remote_map:
+            normalized_map: dict[str, Any] = {}
+            for key, value in account_remote_map.items():
+                if isinstance(key, tuple) and len(key) == 2:
+                    normalized_map[_account_map_key(str(key[0]), str(key[1]))] = value
+                else:
+                    normalized_map[str(key)] = value
+            progress["account_remote_map"] = normalized_map
+            payload["progress"] = progress
+        return payload
+
+    def _persist_session(self, session: dict[str, Any]) -> None:
+        if not self._can_persist_sessions():
+            return
+        session_id = str(session.get("session_id") or "").strip()
+        if not session_id:
+            return
+        ttl = max(60, int(float(session.get("expires_at") or 0) - time.time()))
+        payload = self._normalize_session_for_storage(session)
+        self.storage._redis().client.setex(
+            self._session_redis_key(session_id),
+            ttl,
+            json.dumps(payload, ensure_ascii=False),
+        )
+
+    def _load_session_from_redis(self, session_id: str) -> dict[str, Any] | None:
+        if not self._can_persist_sessions():
+            return None
+        raw = self.storage._redis().client.get(self._session_redis_key(session_id))
+        if not raw:
+            return None
+        try:
+            session = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(session, dict):
+            return None
+        return session
+
     def _get_session_or_raise(self, session_id: str) -> dict[str, Any]:
         with self._lock:
             self._purge_expired_sessions()
             session = self._sessions.get(session_id)
             if not session:
-                raise ValueError("对比会话不存在或已过期")
+                session = self._load_session_from_redis(session_id)
+                if session:
+                    self._sessions[session_id] = session
+            if not session:
+                raise ValueError("对比会话不存在或已过期，请重新「探测远程连接」并「开始对比」")
             session["expires_at"] = time.time() + self.session_ttl_sec
+            self._persist_session(session)
             return session
 
     def _update_session_progress(self, session: dict[str, Any], **kwargs: Any) -> None:
         progress = session.setdefault("progress", {})
         progress.update(kwargs)
         session["progress"] = progress
+        self._persist_session(session)
 
     def _compute_board_pair_diff(
         self,
@@ -947,7 +1028,10 @@ class CompareService:
             total_accounts = max(len(matched_accounts), 1)
             queued_board_pairs = []
             account_remote_map = {
-                _account_key(pair["local"]): pair["remote"]
+                _account_map_key(
+                    str(pair["local"].get("tenant_type") or ""),
+                    str(pair["local"].get("tenant_id") or ""),
+                ): pair["remote"]
                 for pair in matched_accounts
                 if pair.get("local") and pair.get("remote")
             }
@@ -1088,7 +1172,11 @@ class CompareService:
             if pair_index < resume_from_pair_index:
                 continue
             diff_percent = 50 + int((pair_index / total_pairs) * 45)
-            remote_account = account_remote_map.get(_account_key({"tenant_type": queued.get("tenant_type"), "tenant_id": queued.get("tenant_id")})) or {
+            remote_account = _lookup_remote_account(
+                account_remote_map,
+                str(queued.get("tenant_type") or ""),
+                str(queued.get("tenant_id") or ""),
+            ) or {
                 "tenant_type": queued.get("tenant_type"),
                 "tenant_id": queued.get("tenant_id"),
             }

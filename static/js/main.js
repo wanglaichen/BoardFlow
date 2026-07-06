@@ -3027,6 +3027,30 @@ function compareStatusLabel(status) {
     return labels[status] || status || "—";
 }
 
+function formatCompareRequestError(response, rawText) {
+    const text = (rawText || "").trim();
+    if (response.status === 404) {
+        if (/requested URL was not found/i.test(text)) {
+            return "同步接口不存在（404）。请确认服务已更新到 v0.2.9 并已重启；若刚重启过，请重新「探测远程连接」并「开始对比」后再同步。";
+        }
+    }
+    if (!text) {
+        return `请求失败（HTTP ${response.status}）`;
+    }
+    try {
+        const payload = JSON.parse(text);
+        if (payload && typeof payload.message === "string" && payload.message.trim()) {
+            if (/requested URL was not found/i.test(payload.message)) {
+                return "同步接口不存在（404）。请确认服务已更新到 v0.2.9 并已重启；若刚重启过，请重新「探测远程连接」并「开始对比」后再同步。";
+            }
+            return payload.message;
+        }
+    } catch (error) {
+        // fall through
+    }
+    return text.slice(0, 240);
+}
+
 function parseCompareJsonResponse(response) {
     return response.text().then((text) => {
         if (!text) {
@@ -3035,7 +3059,7 @@ function parseCompareJsonResponse(response) {
         try {
             return JSON.parse(text);
         } catch (error) {
-            throw new Error(text.slice(0, 240) || `请求失败（HTTP ${response.status}）`);
+            throw new Error(formatCompareRequestError(response, text));
         }
     });
 }
@@ -3240,7 +3264,7 @@ async function syncComparePair(pairIndex, direction, triggerButton) {
         });
         const payload = await parseCompareJsonResponse(response);
         if (!response.ok) {
-            const message = payload.message || "同步失败";
+            const message = payload.message || formatCompareRequestError(response, JSON.stringify(payload));
             if (message.includes("会话不存在") || message.includes("已过期")) {
                 compareUiState.sessionId = null;
                 throw new Error(`${message}。请先「探测远程连接」并重新「开始对比」。`);
@@ -3325,7 +3349,7 @@ async function syncCompareAccountPair(accountPairIndex, direction, triggerButton
         );
         const payload = await parseCompareJsonResponse(response);
         if (!response.ok) {
-            const message = payload.message || "账号同步失败";
+            const message = payload.message || formatCompareRequestError(response, JSON.stringify(payload));
             if (message.includes("会话不存在") || message.includes("已过期")) {
                 compareUiState.sessionId = null;
                 throw new Error(`${message}。请先「探测远程连接」并重新「开始对比」。`);

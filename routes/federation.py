@@ -64,6 +64,7 @@ def init_federation(storage):
             )
         )
 
+    @bp.route("/accounts/<tenant_type>/<tenant_id>/board-sync", methods=["POST"])
     @bp.route("/accounts/<tenant_type>/<tenant_id>/boards/sync", methods=["POST"])
     def federation_board_sync(tenant_type: str, tenant_id: str):
         try:
