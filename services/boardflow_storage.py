@@ -50,6 +50,7 @@ from services.tenant_keys import (
     user_scope_root,
     user_shared_boards_key,
     user_shared_org_index_key,
+    user_organizations_key,
 )
 
 
@@ -206,6 +207,36 @@ class BoardFlowStorage:
             else:
                 items = self._read_json_sidecar(f"user_orgs_{user_id}.json", [])
             return items
+
+    def list_user_organizations(self, user_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            if self._is_redis():
+                items = self._redis_hlist(user_organizations_key(user_id))
+            else:
+                items = self._read_json_sidecar(f"user_organizations_{user_id}.json", [])
+            return sorted(items, key=lambda item: (item.get("position", 0), item.get("name") or ""))
+
+    def write_user_organizations(self, user_id: str, organizations: list[dict[str, Any]]) -> None:
+        mapping: dict[str, str] = {}
+        for item in organizations:
+            org_id = str(item.get("id") or "")
+            if not org_id:
+                continue
+            mapping[org_id] = json.dumps(item, ensure_ascii=False)
+        with self._lock:
+            if self._is_redis():
+                redis = self._redis()
+                key = user_organizations_key(user_id)
+                existing = set(redis.client.hkeys(key))
+                desired = set(mapping.keys())
+                if existing - desired:
+                    redis.client.hdel(key, *list(existing - desired))
+                if mapping:
+                    self._hset_mapping(redis.client, key, mapping)
+                elif existing:
+                    redis.client.delete(key)
+                return
+            self._write_json_sidecar(f"user_organizations_{user_id}.json", organizations)
 
     def _hset_mapping(self, client: Any, key: str, mapping: dict[str, str]) -> None:
         for field, value in mapping.items():
@@ -577,6 +608,11 @@ class BoardFlowStorage:
 
     def export_full_snapshot(self) -> dict[str, Any]:
         settings = copy.deepcopy(self.read_settings())
+        settings["organizations"] = [
+            org
+            for org in settings.get("organizations") or []
+            if (org.get("created_by_type") or SUPER_ADMIN_TENANT_TYPE) == SUPER_ADMIN_TENANT_TYPE
+        ]
         super_ctx = {
             "type": SUPER_ADMIN_TENANT_TYPE,
             "id": "super_admin",
@@ -599,6 +635,7 @@ class BoardFlowStorage:
                 {
                     "profile": copy.deepcopy(user),
                     "tenant": tenant,
+                    "organizations": copy.deepcopy(self.list_user_organizations(user_id)),
                     "shared_boards": copy.deepcopy(self.list_user_shared_boards(user_id)),
                     "shared_org_index": copy.deepcopy(self.list_user_shared_org_index(user_id)),
                 }
@@ -612,6 +649,10 @@ class BoardFlowStorage:
 
     def import_full_snapshot(self, snapshot: dict[str, Any]) -> None:
         settings = copy.deepcopy(snapshot.get("settings") or DEFAULT_DATA["settings"])
+        global_orgs = settings.get("organizations") or []
+        settings["organizations"] = [
+            org for org in global_orgs if (org.get("created_by_type") or SUPER_ADMIN_TENANT_TYPE) == SUPER_ADMIN_TENANT_TYPE
+        ]
         self.write_settings(settings)
 
         super_ctx = {
@@ -646,6 +687,15 @@ class BoardFlowStorage:
                 "scope_root": user_scope_root(user_id),
             }
             tenant = entry.get("tenant") or {}
+            user_orgs = copy.deepcopy(entry.get("organizations") or [])
+            if not user_orgs:
+                user_orgs = [
+                    copy.deepcopy(org)
+                    for org in global_orgs
+                    if org.get("created_by_type") == USER_TENANT_TYPE
+                    and str(org.get("created_by_id") or "") == user_id
+                ]
+            self.write_user_organizations(user_id, user_orgs)
             self.write_tenant(
                 user_ctx,
                 {
@@ -688,6 +738,20 @@ class BoardFlowStorage:
             contexts.append((user_ctx, copy.deepcopy(self.read_tenant(user_ctx, settings))))
         return contexts
 
+    def _organizations_for_owner(
+        self,
+        owner_type: str | None,
+        owner_id: str | None,
+        settings: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        if owner_type == USER_TENANT_TYPE and owner_id:
+            return self.list_user_organizations(str(owner_id))
+        return [
+            org
+            for org in settings.get("organizations") or []
+            if (org.get("created_by_type") or SUPER_ADMIN_TENANT_TYPE) == SUPER_ADMIN_TENANT_TYPE
+        ]
+
     def export_organization_bundle(
         self,
         org_id: str,
@@ -696,7 +760,7 @@ class BoardFlowStorage:
         owner_id: str | None = None,
     ) -> dict[str, Any]:
         settings = copy.deepcopy(self.read_settings())
-        organizations = settings.get("organizations") or []
+        organizations = self._organizations_for_owner(owner_type, owner_id, settings)
         organization = next((item for item in organizations if str(item.get("id")) == org_id), None)
         org_name = (organization or {}).get("name") or ""
         if not organization and org_id == PERSONAL_ORG_ID:

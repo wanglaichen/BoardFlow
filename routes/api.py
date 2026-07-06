@@ -4,11 +4,14 @@ from flask import Blueprint, Response, jsonify, request, send_file, stream_with_
 from io import BytesIO
 
 from services.card_editors import get_editor_config
+from services.card_revision import ConflictError, card_revision
+from services.collaboration_settings import is_editor_lock_enabled
+from services.edit_lock_service import EditLockRequiredError, InvalidLockTokenError, LockHeldError
 
 api_bp = Blueprint("api", __name__)
 
 
-def init_api(board_service, auth_service, user_service, share_service):
+def init_api(board_service, auth_service, user_service, share_service, edit_lock_service=None):
     def _owner_hint() -> dict | None:
         owner_tenant_type = request.args.get("owner_tenant_type") or request.headers.get("X-Board-Owner-Type")
         owner_tenant_id = request.args.get("owner_tenant_id") or request.headers.get("X-Board-Owner-Id")
@@ -28,6 +31,15 @@ def init_api(board_service, auth_service, user_service, share_service):
 
     def _require_super_admin():
         auth_service.require_super_admin()
+
+    def _lock_service():
+        if edit_lock_service is None:
+            raise RuntimeError("edit_lock_service 未初始化")
+        return edit_lock_service
+
+    def _tenant_from_access(access: dict) -> tuple[str, str]:
+        tenant_ctx = access.get("tenant_ctx") or {}
+        return str(tenant_ctx.get("type") or ""), str(tenant_ctx.get("id") or "")
 
     @api_bp.route("/version", methods=["GET"])
     def get_version():
@@ -68,7 +80,7 @@ def init_api(board_service, auth_service, user_service, share_service):
         payload = request.get_json(silent=True) or {}
         organizations = payload.get("organizations") or payload.get("items") or []
         settings = board_service.update_my_organizations(organizations)
-        return jsonify({"message": "我的项目组织已保存", "settings": settings})
+        return jsonify({"message": "所属组织已保存", "settings": settings})
 
     @api_bp.route("/settings/editable-fonts", methods=["PUT"])
     def update_editable_fonts():
@@ -77,6 +89,14 @@ def init_api(board_service, auth_service, user_service, share_service):
         fonts = payload.get("editable_fonts") or payload
         settings = board_service.update_editable_fonts(fonts)
         return jsonify({"message": "字体设置已保存", "settings": settings})
+
+    @api_bp.route("/settings/collaboration", methods=["PUT"])
+    def update_collaboration_settings():
+        _require_super_admin()
+        payload = request.get_json(silent=True) or {}
+        collaboration = payload.get("collaboration") or payload
+        settings = board_service.update_collaboration(collaboration)
+        return jsonify({"message": "协作设置已保存", "settings": settings})
 
     @api_bp.route("/users", methods=["GET"])
     def list_users():
@@ -244,7 +264,20 @@ def init_api(board_service, auth_service, user_service, share_service):
     def update_card(board_id: str, card_id: str):
         _with_board_access(board_id, require_edit=True)
         payload = request.get_json(silent=True) or {}
-        item = board_service.update_card(board_id, card_id, payload)
+        try:
+            item = board_service.update_card(board_id, card_id, payload)
+        except ConflictError as error:
+            return (
+                jsonify(
+                    {
+                        "error": "conflict",
+                        "message": str(error),
+                        "current": error.current,
+                        "base_revision": error.base_revision,
+                    }
+                ),
+                409,
+            )
         return jsonify({"message": "卡片已更新", "item": item})
 
     @api_bp.route("/boards/<board_id>/cards/<card_id>", methods=["DELETE"])
@@ -268,21 +301,163 @@ def init_api(board_service, auth_service, user_service, share_service):
     def add_comment(board_id: str, card_id: str):
         _with_board_access(board_id, require_edit=True)
         payload = request.get_json(silent=True) or {}
-        item = board_service.add_comment(board_id, card_id, payload)
+        try:
+            item = board_service.add_comment(board_id, card_id, payload)
+        except ConflictError as error:
+            return (
+                jsonify(
+                    {
+                        "error": "conflict",
+                        "message": str(error),
+                        "current": error.current,
+                        "base_revision": error.base_revision,
+                    }
+                ),
+                409,
+            )
         return jsonify({"message": "评论已添加", "item": item})
 
     @api_bp.route("/boards/<board_id>/cards/<card_id>/comments/<comment_id>", methods=["PATCH"])
     def update_comment(board_id: str, card_id: str, comment_id: str):
         _with_board_access(board_id, require_edit=True)
         payload = request.get_json(silent=True) or {}
-        item = board_service.update_comment(board_id, card_id, comment_id, payload)
+        try:
+            item = board_service.update_comment(board_id, card_id, comment_id, payload)
+        except ConflictError as error:
+            return (
+                jsonify(
+                    {
+                        "error": "conflict",
+                        "message": str(error),
+                        "current": error.current,
+                        "base_revision": error.base_revision,
+                    }
+                ),
+                409,
+            )
         return jsonify({"message": "评论已更新", "item": item})
 
     @api_bp.route("/boards/<board_id>/cards/<card_id>/comments/<comment_id>", methods=["DELETE"])
     def delete_comment(board_id: str, card_id: str, comment_id: str):
         _with_board_access(board_id, require_edit=True)
-        item = board_service.delete_comment(board_id, card_id, comment_id)
+        payload = request.get_json(silent=True) or {}
+        base_revision = payload.get("base_revision")
+        if base_revision is None:
+            base_revision = request.args.get("base_revision")
+        item = board_service.delete_comment(
+            board_id,
+            card_id,
+            comment_id,
+            base_revision=base_revision,
+            force=bool(payload.get("force")),
+        )
         return jsonify({"message": "评论已删除", "item": item})
+
+    @api_bp.route("/boards/<board_id>/edit-locks", methods=["GET"])
+    def list_board_edit_locks(board_id: str):
+        access = _with_board_access(board_id)
+        card_ids = [item.strip() for item in (request.args.get("card_ids") or "").split(",") if item.strip()]
+        if not card_ids:
+            return jsonify({"items": []})
+        tenant_type, tenant_id = _tenant_from_access(access)
+        items = _lock_service().list_board_locks(
+            tenant_type=tenant_type,
+            tenant_id=tenant_id,
+            board_id=board_id,
+            card_ids=card_ids,
+        )
+        return jsonify({"items": items})
+
+    @api_bp.route("/boards/<board_id>/cards/<card_id>/<editor_key>/lock", methods=["GET"])
+    def get_card_editor_lock(board_id: str, card_id: str, editor_key: str):
+        access = _with_board_access(board_id)
+        get_editor_config(editor_key)
+        tenant_type, tenant_id = _tenant_from_access(access)
+        lock = _lock_service().get_lock(
+            tenant_type=tenant_type,
+            tenant_id=tenant_id,
+            board_id=board_id,
+            card_id=card_id,
+            scope=editor_key,
+        )
+        return jsonify({"lock": lock})
+
+    @api_bp.route("/boards/<board_id>/cards/<card_id>/<editor_key>/lock", methods=["POST"])
+    def acquire_card_editor_lock(board_id: str, card_id: str, editor_key: str):
+        access = _with_board_access(board_id, require_edit=True)
+        get_editor_config(editor_key)
+        user = auth_service.require_user()
+        payload = request.get_json(silent=True) or {}
+        tenant_type, tenant_id = _tenant_from_access(access)
+        try:
+            result = _lock_service().acquire_lock(
+                tenant_type=tenant_type,
+                tenant_id=tenant_id,
+                board_id=board_id,
+                card_id=card_id,
+                scope=editor_key,
+                user=user,
+                client_id=payload.get("client_id"),
+                force=bool(payload.get("force")),
+            )
+        except LockHeldError as error:
+            return (
+                jsonify(
+                    {
+                        "error": "locked",
+                        "message": str(error),
+                        "holder": error.holder,
+                    }
+                ),
+                409,
+            )
+        card = board_service.get_card_editor(board_id, card_id, get_editor_config(editor_key)["field"])
+        return jsonify(
+            {
+                "message": "已获得编辑锁",
+                **result,
+                "revision": card.get("revision", 0),
+            }
+        )
+
+    @api_bp.route("/boards/<board_id>/cards/<card_id>/<editor_key>/lock", methods=["PUT"])
+    def heartbeat_card_editor_lock(board_id: str, card_id: str, editor_key: str):
+        access = _with_board_access(board_id, require_edit=True)
+        get_editor_config(editor_key)
+        user = auth_service.require_user()
+        token = request.headers.get("X-Edit-Lock-Token") or ""
+        tenant_type, tenant_id = _tenant_from_access(access)
+        try:
+            result = _lock_service().heartbeat(
+                tenant_type=tenant_type,
+                tenant_id=tenant_id,
+                board_id=board_id,
+                card_id=card_id,
+                scope=editor_key,
+                token=token,
+                user=user,
+            )
+        except InvalidLockTokenError as error:
+            return jsonify({"error": "invalid_lock", "message": str(error)}), 423
+        return jsonify({"message": "编辑锁已续期", **result})
+
+    @api_bp.route("/boards/<board_id>/cards/<card_id>/<editor_key>/lock", methods=["DELETE"])
+    def release_card_editor_lock(board_id: str, card_id: str, editor_key: str):
+        access = _with_board_access(board_id, require_edit=True)
+        get_editor_config(editor_key)
+        user = auth_service.require_user()
+        token = request.headers.get("X-Edit-Lock-Token") or ""
+        tenant_type, tenant_id = _tenant_from_access(access)
+        released = _lock_service().release_lock(
+            tenant_type=tenant_type,
+            tenant_id=tenant_id,
+            board_id=board_id,
+            card_id=card_id,
+            scope=editor_key,
+            token=token,
+            user=user,
+        )
+        return jsonify({"message": "编辑锁已释放", "released": released})
 
     @api_bp.route("/boards/<board_id>/cards/<card_id>/<editor_key>", methods=["GET"])
     def get_card_editor(board_id: str, card_id: str, editor_key: str):
@@ -293,11 +468,57 @@ def init_api(board_service, auth_service, user_service, share_service):
 
     @api_bp.route("/boards/<board_id>/cards/<card_id>/<editor_key>", methods=["PUT"])
     def save_card_editor(board_id: str, card_id: str, editor_key: str):
-        _with_board_access(board_id, require_edit=True)
+        access = _with_board_access(board_id, require_edit=True)
         config = get_editor_config(editor_key)
+        user = auth_service.require_user()
         payload = request.get_json(silent=True) or {}
-        item = board_service.update_card_editor(board_id, card_id, config["field"], payload.get(config["field"]))
-        return jsonify({"message": config["save_message"], "item": item})
+        collab = board_service._collaboration_config()
+        lock_enabled = is_editor_lock_enabled(collab, editor_key)
+        tenant_type, tenant_id = _tenant_from_access(access)
+        token = request.headers.get("X-Edit-Lock-Token") or payload.get("lock_token") or ""
+        try:
+            _lock_service().require_valid_lock(
+                tenant_type=tenant_type,
+                tenant_id=tenant_id,
+                board_id=board_id,
+                card_id=card_id,
+                scope=editor_key,
+                token=token,
+                user=user,
+                enabled=lock_enabled,
+            )
+        except EditLockRequiredError as error:
+            return jsonify({"error": "lock_required", "message": str(error)}), 423
+        except InvalidLockTokenError as error:
+            return jsonify({"error": "invalid_lock", "message": str(error)}), 423
+        try:
+            item = board_service.update_card_editor(
+                board_id,
+                card_id,
+                config["field"],
+                payload.get(config["field"]),
+                base_revision=payload.get("base_revision"),
+                force=bool(payload.get("force")),
+            )
+        except ConflictError as error:
+            return (
+                jsonify(
+                    {
+                        "error": "conflict",
+                        "message": str(error),
+                        "current": error.current,
+                        "base_revision": error.base_revision,
+                    }
+                ),
+                409,
+            )
+        return jsonify(
+            {
+                "message": config["save_message"],
+                "item": item,
+                "revision": card_revision(item),
+            }
+        )
 
     @api_bp.route("/search", methods=["GET"])
     def search():

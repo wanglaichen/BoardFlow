@@ -89,29 +89,49 @@ function renderCardViewActions(card, viewMode = "kanban") {
     return `
         <div class="card-view-actions">
             ${actions
-                .map(
-                    (action) => `
+                .map((action) => {
+                    const locked = isCardEditorLocked(card.id, action.id);
+                    const holder = cardEditorLockHolder(card.id, action.id);
+                    const lockTitle = locked
+                        ? `${holder?.display_name || "其他用户"} 正在编辑`
+                        : escapeHtml(action.label);
+                    return `
                 <button
-                    class="card-view-action-btn has-data"
+                    class="card-view-action-btn has-data${locked ? " is-locked" : ""}"
                     type="button"
                     data-card-view-action="${action.id}"
-                    title="${escapeHtml(action.label)}"
-                    aria-label="${escapeHtml(action.label)}"
-                >${renderCardViewActionIcon(action.icon)}</button>
-            `
-                )
+                    title="${escapeHtml(lockTitle)}"
+                    aria-label="${escapeHtml(lockTitle)}"
+                >${renderCardViewActionIcon(action.icon)}${locked ? '<span class="card-view-lock-dot" aria-hidden="true"></span>' : ""}</button>
+            `;
+                })
                 .join("")}
         </div>
     `;
 }
 
-function openCardEditor(cardId, editorKey) {
+async function openCardEditor(cardId, editorKey) {
     if (!state.currentBoardId) {
+        return;
+    }
+    const action = CARD_VIEW_ACTIONS.find((item) => item.id === editorKey);
+    const acquired = await acquireEditorLockBeforeOpen(
+        state.currentBoardId,
+        cardId,
+        editorKey,
+        action?.label || "编辑器"
+    );
+    if (!acquired) {
         return;
     }
     saveBoardViewPreference(state.currentBoardId, state.currentBoardView || editorKey);
     const from = encodeURIComponent(location.hash || `#/board/${state.currentBoardId}`);
-    window.location.href = `/board/${state.currentBoardId}/card/${cardId}/${editorKey}?from=${from}`;
+    let href = `/board/${state.currentBoardId}/card/${cardId}/${editorKey}?from=${from}`;
+    if (state.currentBoardAccess?.shared) {
+        href += `&owner_tenant_type=${encodeURIComponent(state.currentBoardAccess.owner_tenant_type)}`;
+        href += `&owner_tenant_id=${encodeURIComponent(state.currentBoardAccess.owner_tenant_id)}`;
+    }
+    window.location.href = href;
 }
 
 function openCardCanvas(cardId) {
@@ -132,7 +152,7 @@ function handleCardViewAction(actionId, cardId) {
         showError("该视图即将支持");
         return;
     }
-    openCardEditor(cardId, actionId);
+    openCardEditor(cardId, actionId).catch((error) => showError(error.message || "无法打开编辑器"));
 }
 
 function isEditorBoardView(view = state.currentBoardView) {

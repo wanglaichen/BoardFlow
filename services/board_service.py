@@ -5,6 +5,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from services.card_revision import assert_revision, bump_revision, card_revision
+from services.collaboration_settings import merge_settings_collaboration, normalize_collaboration
 from services.org_keys import PERSONAL_BOARD_ORG_NAME, PERSONAL_ORG_ID
 from services.storage import DEFAULT_DATA, DEFAULT_EDITABLE_FONTS, EDITABLE_FONT_SCOPE_IDS
 from services.tenant_keys import (
@@ -75,6 +77,14 @@ class BoardService:
         meta[key] = current + 1
         return str(current)
 
+    def _collaboration_config(self) -> dict[str, Any]:
+        settings = self.storage.read_settings()
+        return merge_settings_collaboration(settings)
+
+    def _tenant_lock_identity(self) -> tuple[str, str]:
+        ctx = self._tenant_ctx()
+        return str(ctx.get("type") or ""), str(ctx.get("id") or "")
+
     def get_settings(self) -> dict[str, Any]:
         with self._lock:
             settings = copy.deepcopy(self.storage.read_settings())
@@ -83,164 +93,158 @@ class BoardService:
             settings.setdefault("editable_fonts", DEFAULT_EDITABLE_FONTS)
             settings.setdefault("shared_boards", [])
             settings.setdefault("shared_org_index", [])
+            settings["collaboration"] = merge_settings_collaboration(settings)
 
             user = self.auth_service.get_current_user() if self.auth_service else None
-            global_orgs = self._read_global_organizations()
-            settings["organizations"] = global_orgs
-
             if user and not user.get("is_super_admin"):
                 user_id = str(user.get("id") or "")
-                self._migrate_legacy_user_org_data(user_id)
+                self._migrate_user_organizations(user_id)
                 self._maybe_seed_user_organizations(user_id)
                 if self.share_service:
                     self.share_service.sync_grantee_share_index(user_id)
-                settings["organizations"] = self._visible_organizations_for_user(user_id, global_orgs)
+                settings["organizations"] = self._read_user_organizations(user_id)
                 settings["shared_boards"] = self.storage.list_user_shared_boards(user_id)
                 settings["shared_org_index"] = self.storage.list_user_shared_org_index(user_id)
             elif user and user.get("is_super_admin"):
-                settings["organizations"] = self._organizations_for_super_admin(global_orgs)
+                settings["organizations"] = self._read_admin_organizations()
+            else:
+                settings["organizations"] = self._read_admin_organizations()
             return settings
 
-    def _read_global_organizations(self) -> list[dict[str, Any]]:
+    def _read_admin_organizations(self) -> list[dict[str, Any]]:
         settings = self.storage.read_settings()
         organizations = copy.deepcopy(settings.get("organizations") or DEFAULT_DATA["settings"]["organizations"])
         changed = False
         now = _now_iso()
+        cleaned: list[dict[str, Any]] = []
         for org in organizations:
+            if org.get("created_by_type") == USER_TENANT_TYPE:
+                changed = True
+                continue
             if not org.get("created_by_type") or not org.get("created_by_id"):
                 org.update(SUPER_ADMIN_ORG_CREATOR)
                 org.setdefault("created_at", now)
                 org["updated_at"] = now
                 changed = True
+            cleaned.append(org)
         if changed:
-            settings["organizations"] = organizations
+            settings["organizations"] = cleaned
             self.storage.write_settings(settings)
-        return organizations
+        return cleaned
 
-    def _write_global_organizations(self, organizations: list[dict[str, Any]]) -> None:
+    def _write_admin_organizations(self, organizations: list[dict[str, Any]]) -> None:
         settings = self.storage.read_settings()
         settings["organizations"] = organizations
         self.storage.write_settings(settings)
 
-    def _organizations_for_super_admin(self, global_orgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [
-            org
-            for org in global_orgs
-            if org.get("created_by_type") == SUPER_ADMIN_TENANT_TYPE
-            or not org.get("created_by_type")
-        ]
+    def _read_user_organizations(self, user_id: str) -> list[dict[str, Any]]:
+        return self.storage.list_user_organizations(user_id)
 
-    def _organizations_owned_by_user(self, user_id: str, global_orgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [
-            org
-            for org in global_orgs
-            if org.get("created_by_type") == USER_TENANT_TYPE and str(org.get("created_by_id")) == str(user_id)
-        ]
+    def _write_user_organizations(self, user_id: str, organizations: list[dict[str, Any]]) -> None:
+        self.storage.write_user_organizations(user_id, organizations)
 
-    def _is_organization_owned_by_user(self, org: dict[str, Any], user_id: str) -> bool:
-        return (
-            org.get("created_by_type") == USER_TENANT_TYPE
-            and str(org.get("created_by_id") or "") == str(user_id)
-        )
-
-    def _visible_organizations_for_user(
-        self, user_id: str, global_orgs: list[dict[str, Any]] | None = None
-    ) -> list[dict[str, Any]]:
-        global_orgs = global_orgs if global_orgs is not None else self._read_global_organizations()
-        visible = [
-            org for org in global_orgs if self._is_organization_owned_by_user(org, user_id)
-        ]
-        return sorted(visible, key=lambda item: (item.get("position", 0), item.get("name") or ""))
-
-    def _migrate_legacy_user_org_data(self, user_id: str) -> None:
-        entries = self.storage.list_legacy_user_org_entries(user_id)
-        if not entries or not any(entry.get("name") for entry in entries):
+    def _migrate_user_organizations(self, user_id: str) -> None:
+        existing = self.storage.list_user_organizations(user_id)
+        if existing:
+            self._purge_user_orgs_from_global_settings(user_id)
+            self.storage.delete_legacy_user_index_keys(user_id)
             return
 
-        global_orgs = self._read_global_organizations()
-        visible_ids: list[str] = []
+        merged: dict[str, dict[str, Any]] = {}
         now = _now_iso()
 
-        for item in entries:
+        for item in self.storage.list_legacy_user_org_entries(user_id):
             name = (item.get("name") or "").strip()
             if not name:
                 continue
-            legacy_org_id = str(item.get("id") or item.get("org_id") or "")
-            admin_org = next(
-                (
-                    org
-                    for org in global_orgs
-                    if (org.get("name") or "").strip() == name
-                    and org.get("created_by_type") == SUPER_ADMIN_TENANT_TYPE
-                ),
-                None,
-            )
-            if admin_org and legacy_org_id and legacy_org_id == str(admin_org.get("id")):
-                continue
-
-            existing = next(
-                (
-                    org
-                    for org in global_orgs
-                    if (org.get("name") or "").strip() == name
-                    and self._is_organization_owned_by_user(org, user_id)
-                ),
-                None,
-            )
-            if existing:
-                visible_ids.append(str(existing["id"]))
-                continue
-
-            org_id = legacy_org_id if legacy_org_id and not admin_org else f"org_{uuid.uuid4().hex[:8]}"
-            if any(str(org.get("id")) == org_id for org in global_orgs):
+            org_id = str(item.get("id") or item.get("org_id") or f"org_{uuid.uuid4().hex[:8]}")
+            while org_id in merged:
                 org_id = f"org_{uuid.uuid4().hex[:8]}"
-            global_orgs.append(
-                {
-                    "id": org_id,
-                    "name": name,
-                    "note": (item.get("note") or "").strip(),
-                    "created_by_type": USER_TENANT_TYPE,
-                    "created_by_id": user_id,
-                    "created_at": item.get("created_at") or now,
-                    "updated_at": now,
-                }
-            )
-            visible_ids.append(org_id)
+            merged[org_id] = {
+                "id": org_id,
+                "name": name,
+                "note": (item.get("note") or "").strip(),
+                "created_at": item.get("created_at") or now,
+                "updated_at": now,
+            }
 
-        self._write_global_organizations(global_orgs)
+        settings = self.storage.read_settings()
+        global_orgs = settings.get("organizations") or []
+        admin_names = {
+            (org.get("name") or "").strip()
+            for org in global_orgs
+            if (org.get("created_by_type") or SUPER_ADMIN_TENANT_TYPE) == SUPER_ADMIN_TENANT_TYPE
+        }
+        for org in global_orgs:
+            if org.get("created_by_type") != USER_TENANT_TYPE:
+                continue
+            if str(org.get("created_by_id") or "") != str(user_id):
+                continue
+            name = (org.get("name") or "").strip()
+            if not name or name in admin_names:
+                continue
+            org_id = str(org.get("id") or f"org_{uuid.uuid4().hex[:8]}")
+            if org_id in merged:
+                continue
+            merged[org_id] = {
+                "id": org_id,
+                "name": name,
+                "note": (org.get("note") or "").strip(),
+                "created_at": org.get("created_at") or now,
+                "updated_at": org.get("updated_at") or now,
+            }
+
+        if merged:
+            self._write_user_organizations(user_id, list(merged.values()))
+
+        self._purge_user_orgs_from_global_settings(user_id)
         self.storage.delete_legacy_user_index_keys(user_id)
 
+    def _purge_user_orgs_from_global_settings(self, user_id: str | None = None) -> None:
+        settings = self.storage.read_settings()
+        organizations = settings.get("organizations") or []
+        if user_id:
+            filtered = [
+                org
+                for org in organizations
+                if not (
+                    org.get("created_by_type") == USER_TENANT_TYPE
+                    and str(org.get("created_by_id") or "") == str(user_id)
+                )
+            ]
+        else:
+            filtered = [org for org in organizations if org.get("created_by_type") != USER_TENANT_TYPE]
+        if len(filtered) != len(organizations):
+            settings["organizations"] = filtered
+            self.storage.write_settings(settings)
+
     def _maybe_seed_user_organizations(self, user_id: str) -> None:
-        global_orgs = self._read_global_organizations()
-        if self._visible_organizations_for_user(user_id, global_orgs):
+        if self._read_user_organizations(user_id):
             return
 
         tenant_ctx = build_tenant_context({"id": user_id, "is_super_admin": False})
         data = self.storage.read_tenant(tenant_ctx, self.storage.read_settings())
+        orgs = list(self._read_user_organizations(user_id))
         for board in data.get("boards", []):
             name = (board.get("organization") or "").strip()
             if name and name != PERSONAL_BOARD_ORG_NAME:
-                self._ensure_user_organization(user_id, name, global_orgs)
+                org = self._ensure_user_organization(user_id, name, orgs)
+                if org and not any(str(item.get("id")) == str(org.get("id")) for item in orgs):
+                    orgs.append(org)
 
     def _ensure_user_organization(
         self,
         user_id: str,
         org_name: str,
-        global_orgs: list[dict[str, Any]] | None = None,
+        user_orgs: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
         normalized = (org_name or "").strip()
         if not normalized or normalized == PERSONAL_BOARD_ORG_NAME:
             return None
 
-        global_orgs = global_orgs if global_orgs is not None else self._read_global_organizations()
+        user_orgs = user_orgs if user_orgs is not None else self._read_user_organizations(user_id)
         existing = next(
-            (
-                org
-                for org in global_orgs
-                if (org.get("name") or "").strip() == normalized
-                and org.get("created_by_type") == USER_TENANT_TYPE
-                and str(org.get("created_by_id")) == str(user_id)
-            ),
+            (org for org in user_orgs if (org.get("name") or "").strip() == normalized),
             None,
         )
         now = _now_iso()
@@ -249,36 +253,87 @@ class BoardService:
                 "id": f"org_{uuid.uuid4().hex[:8]}",
                 "name": normalized,
                 "note": "",
-                "created_by_type": USER_TENANT_TYPE,
-                "created_by_id": user_id,
                 "created_at": now,
                 "updated_at": now,
             }
-            global_orgs.append(existing)
-            self._write_global_organizations(global_orgs)
+            user_orgs = [*user_orgs, existing]
+            self._write_user_organizations(user_id, user_orgs)
 
         return existing
+
+    def _organizations_for_current_tenant(self) -> list[dict[str, Any]]:
+        user = self.auth_service.get_current_user() if self.auth_service else None
+        if user and not user.get("is_super_admin"):
+            return copy.deepcopy(self._read_user_organizations(str(user.get("id") or "")))
+        return copy.deepcopy(self._read_admin_organizations())
+
+    def _write_organizations_for_current_tenant(self, organizations: list[dict[str, Any]]) -> None:
+        user = self.auth_service.get_current_user() if self.auth_service else None
+        if user and not user.get("is_super_admin"):
+            self._write_user_organizations(str(user.get("id") or ""), organizations)
+            return
+        self._write_admin_organizations(organizations)
+
+    def _import_merge_organization(self, org_meta: dict[str, Any]) -> dict[str, Any]:
+        name = (org_meta.get("name") or "").strip()
+        org_id = str(org_meta.get("id") or "").strip()
+        note = (org_meta.get("note") or "").strip()
+        if not name or name == PERSONAL_BOARD_ORG_NAME:
+            return {"id": PERSONAL_ORG_ID, "name": PERSONAL_BOARD_ORG_NAME, "note": ""}
+
+        orgs = self._organizations_for_current_tenant()
+        now = _now_iso()
+
+        if org_id:
+            existing = next((org for org in orgs if str(org.get("id")) == org_id), None)
+            if existing:
+                changed = False
+                if note and note != (existing.get("note") or "").strip():
+                    existing["note"] = note
+                    changed = True
+                if name != (existing.get("name") or "").strip():
+                    existing["name"] = name
+                    changed = True
+                if changed:
+                    existing["updated_at"] = now
+                    self._write_organizations_for_current_tenant(orgs)
+                return existing
+
+        existing = next((org for org in orgs if (org.get("name") or "").strip() == name), None)
+        if existing:
+            if note and note != (existing.get("note") or "").strip():
+                existing["note"] = note
+                existing["updated_at"] = now
+                self._write_organizations_for_current_tenant(orgs)
+            return existing
+
+        user = self.auth_service.get_current_user() if self.auth_service else None
+        new_id = org_id if org_id and not any(str(org.get("id")) == org_id for org in orgs) else f"org_{uuid.uuid4().hex[:8]}"
+        new_org: dict[str, Any] = {
+            "id": new_id,
+            "name": name,
+            "note": note,
+            "created_at": now,
+            "updated_at": now,
+        }
+        if not user or user.get("is_super_admin"):
+            new_org.update(SUPER_ADMIN_ORG_CREATOR)
+        orgs.append(new_org)
+        self._write_organizations_for_current_tenant(orgs)
+        return new_org
 
     def _ensure_super_admin_organization(
         self,
         org_name: str,
-        global_orgs: list[dict[str, Any]] | None = None,
+        admin_orgs: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
         normalized = (org_name or "").strip()
         if not normalized or normalized == PERSONAL_BOARD_ORG_NAME:
             return None
 
-        global_orgs = global_orgs if global_orgs is not None else self._read_global_organizations()
+        admin_orgs = admin_orgs if admin_orgs is not None else self._read_admin_organizations()
         existing = next(
-            (
-                org
-                for org in global_orgs
-                if (org.get("name") or "").strip() == normalized
-                and (
-                    org.get("created_by_type") == SUPER_ADMIN_TENANT_TYPE
-                    or not org.get("created_by_type")
-                )
-            ),
+            (org for org in admin_orgs if (org.get("name") or "").strip() == normalized),
             None,
         )
         now = _now_iso()
@@ -291,8 +346,8 @@ class BoardService:
                 "created_at": now,
                 "updated_at": now,
             }
-            global_orgs.append(existing)
-            self._write_global_organizations(global_orgs)
+            admin_orgs = [*admin_orgs, existing]
+            self._write_admin_organizations(admin_orgs)
 
         return existing
 
@@ -383,6 +438,14 @@ class BoardService:
             self.storage.write_settings(settings)
             return settings
 
+    def update_collaboration(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            settings = self.get_settings()
+            merged = normalize_collaboration({**settings.get("collaboration", {}), **(payload or {})})
+            settings["collaboration"] = merged
+            self.storage.write_settings(settings)
+            return settings
+
     def update_organizations(self, organizations: list[dict[str, Any]]) -> dict[str, Any]:
         validated: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
@@ -406,11 +469,7 @@ class BoardService:
 
         with self._lock:
             data = self._read()
-            global_orgs = self._read_global_organizations()
-            user_owned_orgs = [
-                org for org in global_orgs if org.get("created_by_type") == USER_TENANT_TYPE
-            ]
-            old_orgs = self._organizations_for_super_admin(global_orgs)
+            old_orgs = self._read_admin_organizations()
             old_by_id = {str(item.get("id")): item for item in old_orgs if item.get("id") is not None}
             now = _now_iso()
             validated = [
@@ -443,13 +502,12 @@ class BoardService:
                 if (board.get("organization") or "").strip() in removed_names:
                     board["organization"] = ""
 
-            merged_orgs = validated + user_owned_orgs
             settings = data.setdefault("settings", {})
-            settings["organizations"] = merged_orgs
+            settings["organizations"] = validated
             data["settings"] = settings
             self._write(data)
-            self.storage.write_settings(settings)
-            settings["organizations"] = self._organizations_for_super_admin(merged_orgs)
+            self._write_admin_organizations(validated)
+            settings["organizations"] = validated
             return settings
 
     def update_my_organizations(self, organizations: list[dict[str, Any]]) -> dict[str, Any]:
@@ -482,15 +540,12 @@ class BoardService:
         with self._lock:
             tenant_ctx = build_tenant_context({"id": user_id, "is_super_admin": False})
             data = self.storage.read_tenant(tenant_ctx, self.storage.read_settings())
-            global_orgs = self._read_global_organizations()
-            old_orgs = self._organizations_owned_by_user(user_id, global_orgs)
+            old_orgs = self._read_user_organizations(user_id)
             old_by_id = {str(item.get("id")): item for item in old_orgs if item.get("id") is not None}
             now = _now_iso()
             validated = [
                 {
                     **org,
-                    "created_by_type": USER_TENANT_TYPE,
-                    "created_by_id": user_id,
                     "created_at": (old_by_id.get(org["id"]) or {}).get("created_at") or now,
                     "updated_at": now,
                 }
@@ -518,16 +573,7 @@ class BoardService:
                 if (board.get("organization") or "").strip() in removed_names:
                     board["organization"] = ""
 
-            preserved_orgs = [
-                org
-                for org in global_orgs
-                if not (
-                    org.get("created_by_type") == USER_TENANT_TYPE
-                    and str(org.get("created_by_id")) == str(user_id)
-                )
-            ]
-            merged_orgs = preserved_orgs + validated
-            self._write_global_organizations(merged_orgs)
+            self._write_user_organizations(user_id, validated)
             self.storage.write_tenant(tenant_ctx, data, self.storage.read_settings())
 
             return self.get_settings()
@@ -861,6 +907,7 @@ class BoardService:
                 "mindmap_data": None,
                 "table_data": None,
                 "description_data": None,
+                "revision": 1,
                 "created_at": now,
                 "updated_at": now,
             }
@@ -869,10 +916,25 @@ class BoardService:
             self._write(data)
             return card
 
-    def update_card(self, board_id: str, card_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def update_card(
+        self,
+        board_id: str,
+        card_id: str,
+        payload: dict[str, Any],
+        *,
+        base_revision: Any = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
         with self._lock:
             data = self._read()
             card = self._find_card(data, board_id, card_id)
+            collab = self._collaboration_config()
+            assert_revision(
+                card,
+                base_revision if base_revision is not None else payload.get("base_revision"),
+                enabled=collab.get("card_optimistic_lock", True),
+                force=force or bool(payload.get("force")),
+            )
             if "title" in payload:
                 title = (payload.get("title") or "").strip()
                 if not title:
@@ -899,6 +961,9 @@ class BoardService:
                 card["checklist"] = checklist
                 card["checklist_done"] = sum(1 for item in checklist if item["done"])
                 card["checklist_total"] = len(checklist)
+                card["checklist_done"] = sum(1 for item in checklist if item["done"])
+                card["checklist_total"] = len(checklist)
+            bump_revision(card)
             card["updated_at"] = _now_iso()
             self._touch_board(data, board_id)
             self._write(data)
@@ -911,14 +976,32 @@ class BoardService:
             return {
                 "id": card_id,
                 "title": card.get("title") or "",
+                "revision": card_revision(card),
                 field: card.get(field),
             }
 
-    def update_card_editor(self, board_id: str, card_id: str, field: str, payload: Any) -> dict[str, Any]:
+    def update_card_editor(
+        self,
+        board_id: str,
+        card_id: str,
+        field: str,
+        payload: Any,
+        *,
+        base_revision: Any = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
         with self._lock:
             data = self._read()
             card = self._find_card(data, board_id, card_id)
+            collab = self._collaboration_config()
+            assert_revision(
+                card,
+                base_revision,
+                enabled=collab.get("card_optimistic_lock", True),
+                force=force,
+            )
             card[field] = payload
+            bump_revision(card)
             card["updated_at"] = _now_iso()
             self._touch_board(data, board_id)
             self._write(data)
@@ -992,7 +1075,15 @@ class BoardService:
             self._write(data)
             return card
 
-    def add_comment(self, board_id: str, card_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def add_comment(
+        self,
+        board_id: str,
+        card_id: str,
+        payload: dict[str, Any],
+        *,
+        base_revision: Any = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
         content = (payload.get("content") or "").strip()
         if not content:
             raise ValueError("评论内容不能为空")
@@ -1001,6 +1092,13 @@ class BoardService:
         with self._lock:
             data = self._read()
             card = self._find_card(data, board_id, card_id)
+            collab = self._collaboration_config()
+            assert_revision(
+                card,
+                base_revision if base_revision is not None else payload.get("base_revision"),
+                enabled=collab.get("card_optimistic_lock", True),
+                force=force or bool(payload.get("force")),
+            )
             item = {
                 "id": str(uuid.uuid4())[:8],
                 "content": content,
@@ -1014,6 +1112,7 @@ class BoardService:
                 item["replies"] = []
                 card.setdefault("comments", []).append(item)
             card["comment_count"] = self._count_comments(card.get("comments", []))
+            bump_revision(card)
             card["updated_at"] = _now_iso()
             self._touch_board(data, board_id)
             self._write(data)
@@ -1025,6 +1124,9 @@ class BoardService:
         card_id: str,
         comment_id: str,
         payload: dict[str, Any],
+        *,
+        base_revision: Any = None,
+        force: bool = False,
     ) -> dict[str, Any]:
         content = (payload.get("content") or "").strip()
         if not content:
@@ -1033,18 +1135,41 @@ class BoardService:
         with self._lock:
             data = self._read()
             card = self._find_card(data, board_id, card_id)
+            collab = self._collaboration_config()
+            assert_revision(
+                card,
+                base_revision if base_revision is not None else payload.get("base_revision"),
+                enabled=collab.get("card_optimistic_lock", True),
+                force=force or bool(payload.get("force")),
+            )
             target, _parent = self._locate_comment(card, comment_id)
             target["content"] = content
             target["updated_at"] = _now_iso()
+            bump_revision(card)
             card["updated_at"] = _now_iso()
             self._touch_board(data, board_id)
             self._write(data)
             return card
 
-    def delete_comment(self, board_id: str, card_id: str, comment_id: str) -> dict[str, Any]:
+    def delete_comment(
+        self,
+        board_id: str,
+        card_id: str,
+        comment_id: str,
+        *,
+        base_revision: Any = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
         with self._lock:
             data = self._read()
             card = self._find_card(data, board_id, card_id)
+            collab = self._collaboration_config()
+            assert_revision(
+                card,
+                base_revision,
+                enabled=collab.get("card_optimistic_lock", True),
+                force=force,
+            )
             _target, parent = self._locate_comment(card, comment_id)
             if parent is None:
                 card["comments"] = [
@@ -1055,6 +1180,7 @@ class BoardService:
                     item for item in parent.get("replies", []) if str(item.get("id")) != comment_id
                 ]
             card["comment_count"] = self._count_comments(card.get("comments", []))
+            bump_revision(card)
             card["updated_at"] = _now_iso()
             self._touch_board(data, board_id)
             self._write(data)
@@ -1375,24 +1501,29 @@ class BoardService:
             return {"type": USER_TENANT_TYPE, "id": str(user.get("id") or "")}
         return {"type": SUPER_ADMIN_TENANT_TYPE, "id": SUPER_ADMIN_ID}
 
-    def _find_global_org(self, org_id: str) -> dict[str, Any] | None:
-        global_orgs = self._read_global_organizations()
-        return next((item for item in global_orgs if str(item.get("id")) == org_id), None)
+    def _find_org(self, org_id: str, scope: dict[str, str]) -> dict[str, Any] | None:
+        if scope["type"] == USER_TENANT_TYPE:
+            orgs = self._read_user_organizations(scope["id"])
+        else:
+            orgs = self._read_admin_organizations()
+        return next((item for item in orgs if str(item.get("id")) == org_id), None)
 
     def _is_org_owned_by_scope(self, org: dict[str, Any], scope: dict[str, str]) -> bool:
         if str(org.get("id")) == PERSONAL_ORG_ID:
+            return True
+        if scope["type"] == USER_TENANT_TYPE:
             return True
         org_type = str(org.get("created_by_type") or SUPER_ADMIN_TENANT_TYPE)
         org_owner = str(org.get("created_by_id") or SUPER_ADMIN_ID)
         return org_type == scope["type"] and org_owner == scope["id"]
 
     def assert_org_owner(self, org_id: str) -> dict[str, Any]:
-        org = self._find_global_org(org_id)
+        scope = self._current_owner_scope()
+        org = self._find_org(org_id, scope)
         if not org and org_id == PERSONAL_ORG_ID:
             org = {"id": PERSONAL_ORG_ID, "name": PERSONAL_BOARD_ORG_NAME, "note": ""}
         if not org:
             raise ValueError("组织不存在")
-        scope = self._current_owner_scope()
         user = self.auth_service.get_current_user() if self.auth_service else None
         if user and user.get("is_super_admin") and scope["type"] == SUPER_ADMIN_TENANT_TYPE:
             return org
@@ -1472,7 +1603,23 @@ class BoardService:
         with self._lock:
             data = self._read()
             self._find_board(data, board_id)
-            return export_board(data, board_id)
+            organizations = self._organizations_for_current_tenant()
+            return export_board(data, board_id, organizations=organizations)
+
+    def _prepare_board_import_package(self, package: dict[str, Any]) -> dict[str, Any]:
+        payload = copy.deepcopy(package.get("payload") or {})
+        board = payload.get("board") or {}
+        org_meta = payload.get("organization")
+        if not isinstance(org_meta, dict):
+            org_name = (board.get("organization") or "").strip()
+            org_meta = {"id": "", "name": org_name, "note": ""} if org_name else {}
+        if org_meta:
+            resolved = self._import_merge_organization(org_meta)
+            board = copy.deepcopy(board)
+            board["organization"] = resolved.get("name") or board.get("organization") or ""
+            payload["board"] = board
+            payload["organization"] = resolved
+        return {**package, "payload": payload}
 
     def validate_import_dat(self, raw: bytes | str, *, expected_kind: str | None = None) -> dict[str, Any]:
         from services.data_transfer import parse_package, validate_package
@@ -1523,6 +1670,9 @@ class BoardService:
                     owner_id=owner_scope["id"] if owner_only else None,
                 )
                 return validation
+
+            if kind == "board":
+                package = self._prepare_board_import_package(package)
 
             current = self._read()
             imported = apply_import(current, package, mode=mode)

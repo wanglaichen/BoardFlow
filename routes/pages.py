@@ -28,6 +28,7 @@ def init_pages(board_service, auth_service, share_service):
         if not card:
             abort(404)
 
+        tenant_ctx = access.get("tenant_ctx") or {}
         return_url = request.args.get("from") or f"#/board/{board_id}"
         return render_template(
             config["template"],
@@ -37,6 +38,8 @@ def init_pages(board_service, auth_service, share_service):
             return_url=return_url,
             editor_key=editor_key,
             static_app=config["static_app"],
+            owner_tenant_type=tenant_ctx.get("type") if access.get("shared") else "",
+            owner_tenant_id=tenant_ctx.get("id") if access.get("shared") else "",
         )
 
     return pages_bp

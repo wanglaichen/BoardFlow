@@ -324,8 +324,15 @@ def validate_package(package: dict[str, Any], *, expected_kind: str | None = Non
         ref_errors, ref_warnings = _validate_refs(boards, lists, cards)
         errors.extend(ref_errors)
         warnings.extend(ref_warnings)
+        organization = payload.get("organization")
+        if organization is not None and not isinstance(organization, dict):
+            errors.append("看板包 organization 必须是对象")
+            organization = None
+        elif isinstance(organization, dict) and not (organization.get("name") or "").strip():
+            warnings.append("看板包未携带组织名称，导入时将仅依赖看板上的 organization 字段")
         summary = {
             "board_title": (board or {}).get("title") if isinstance(board, dict) else "",
+            "organization": (organization or {}).get("name") if isinstance(organization, dict) else ((board or {}).get("organization") if isinstance(board, dict) else ""),
             "lists": len(lists),
             "cards": len(cards),
         }
@@ -405,20 +412,40 @@ def import_organization_snapshot(
     org_id = str(organization.get("id") or "")
     org_name = (organization.get("name") or "").strip()
 
-    settings = copy.deepcopy(storage.read_settings())
-    orgs = settings.setdefault("organizations", [])
-    if org_name and org_name != PERSONAL_BOARD_ORG_NAME:
-        existing = next(
-            (item for item in orgs if str(item.get("id")) == org_id or (item.get("name") or "").strip() == org_name),
-            None,
-        )
-        if existing:
-            existing.update({key: value for key, value in organization.items() if key != "id"})
-        else:
-            orgs.append(organization)
-    storage.write_settings(settings)
+    from services.tenant_keys import SUPER_ADMIN_TENANT_TYPE, USER_TENANT_TYPE, user_scope_root
 
-    from services.tenant_keys import SUPER_ADMIN_TENANT_TYPE, user_scope_root
+    target_owner_type = owner_type
+    target_owner_id = owner_id
+    if not target_owner_type and organization.get("created_by_type") == USER_TENANT_TYPE:
+        target_owner_type = USER_TENANT_TYPE
+        target_owner_id = str(organization.get("created_by_id") or "")
+
+    if org_name and org_name != PERSONAL_BOARD_ORG_NAME:
+        if target_owner_type == USER_TENANT_TYPE and target_owner_id:
+            orgs = storage.list_user_organizations(str(target_owner_id))
+            existing = next(
+                (item for item in orgs if str(item.get("id")) == org_id or (item.get("name") or "").strip() == org_name),
+                None,
+            )
+            if existing:
+                existing.update({key: value for key, value in organization.items() if key != "id"})
+            else:
+                orgs.append(organization)
+            storage.write_user_organizations(str(target_owner_id), orgs)
+        else:
+            settings = copy.deepcopy(storage.read_settings())
+            orgs = settings.setdefault("organizations", [])
+            existing = next(
+                (item for item in orgs if str(item.get("id")) == org_id or (item.get("name") or "").strip() == org_name),
+                None,
+            )
+            if existing:
+                existing.update({key: value for key, value in organization.items() if key != "id"})
+            else:
+                orgs.append(organization)
+            storage.write_settings(settings)
+
+    settings = storage.read_settings()
 
     if owner_type and owner_id:
         for board_id, owner in board_owners.items():
@@ -594,7 +621,27 @@ def _export_organization_legacy(data: dict[str, Any], org_id: str) -> tuple[byte
     return serialize_package(package), filename
 
 
-def export_board(data: dict[str, Any], board_id: str) -> tuple[bytes, str]:
+def _resolve_board_organization(
+    board: dict[str, Any],
+    organizations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    org_name = (board.get("organization") or "").strip()
+    if not org_name or org_name == PERSONAL_BOARD_ORG_NAME:
+        return {"id": PERSONAL_ORG_ID, "name": PERSONAL_BOARD_ORG_NAME, "note": "内置个人看板组织"}
+
+    for org in organizations:
+        if (org.get("name") or "").strip() == org_name:
+            return copy.deepcopy(org)
+
+    return {"id": "", "name": org_name, "note": ""}
+
+
+def export_board(
+    data: dict[str, Any],
+    board_id: str,
+    *,
+    organizations: list[dict[str, Any]] | None = None,
+) -> tuple[bytes, str]:
     board = next((item for item in data.get("boards") or [] if str(item.get("id")) == board_id), None)
     if not board:
         raise ValueError("看板不存在")
@@ -606,17 +653,26 @@ def export_board(data: dict[str, Any], board_id: str) -> tuple[bytes, str]:
         for item in data.get("cards") or []
         if str(item.get("board_id")) == board_id or str(item.get("list_id")) in list_ids
     ]
+    organization = _resolve_board_organization(board, organizations or data.get("settings", {}).get("organizations") or [])
 
     payload = {
         "board": copy.deepcopy(board),
+        "organization": organization,
         "lists": lists,
         "cards": cards,
     }
     title = (board.get("title") or board_id).strip()
+    org_name = (organization.get("name") or "").strip()
     package = build_package(
         "board",
         payload,
-        {"label": f"看板导出：{title}", "board_id": board_id, "board_title": title},
+        {
+            "label": f"看板导出：{title}",
+            "board_id": board_id,
+            "board_title": title,
+            "organization_id": organization.get("id") or "",
+            "organization_name": org_name,
+        },
     )
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     filename = f"boardflow-board-{_slug_filename(title, board_id)}-{stamp}.dat"

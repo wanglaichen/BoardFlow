@@ -170,7 +170,6 @@ class ShareService:
     def _build_shared_board_entries(self, grantee_user_id: str) -> list[dict[str, Any]]:
         shares = self.list_received_shares(grantee_user_id)
         settings = self.storage.read_settings()
-        global_orgs = settings.get("organizations") or []
         entries: list[dict[str, Any]] = []
 
         for share in shares:
@@ -186,16 +185,14 @@ class ShareService:
             board_id = str(board["id"])
             owner_user = self.storage.get_user(share.get("owner_tenant_id") or "")
             owner_display_name = (owner_user or {}).get("display_name") or (owner_user or {}).get("username") or ""
+            owner_type = str(share.get("owner_tenant_type") or "")
+            owner_id = str(share.get("owner_tenant_id") or "")
             if share.get("owner_tenant_type") == SUPER_ADMIN_TENANT_TYPE:
                 owner_display_name = owner_display_name or "超级管理员"
 
             org_name = (board.get("organization") or "").strip() or PERSONAL_BOARD_ORG_NAME
-            org_id = self._resolve_organization_id(
-                org_name,
-                str(share.get("owner_tenant_type") or ""),
-                str(share.get("owner_tenant_id") or ""),
-                global_orgs,
-            )
+            owner_orgs = self._organizations_for_owner(owner_type, owner_id, settings)
+            org_id = self._resolve_organization_id(org_name, owner_type, owner_id, owner_orgs)
             entry_id = shared_board_entry_id(
                 str(share.get("owner_tenant_type") or ""),
                 str(share.get("owner_tenant_id") or ""),
@@ -296,32 +293,41 @@ class ShareService:
             "card_count": len(board_cards),
         }
 
+    def _organizations_for_owner(
+        self,
+        owner_tenant_type: str,
+        owner_tenant_id: str,
+        settings: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        if owner_tenant_type == USER_TENANT_TYPE and owner_tenant_id:
+            return self.storage.list_user_organizations(owner_tenant_id)
+        return [
+            org
+            for org in settings.get("organizations") or []
+            if (org.get("created_by_type") or SUPER_ADMIN_TENANT_TYPE) == SUPER_ADMIN_TENANT_TYPE
+        ]
+
     @staticmethod
     def _resolve_organization_id(
         org_name: str,
         owner_tenant_type: str,
         owner_tenant_id: str,
-        global_orgs: list[dict[str, Any]],
+        organizations: list[dict[str, Any]],
     ) -> str:
         name = (org_name or "").strip() or PERSONAL_BOARD_ORG_NAME
         if name == PERSONAL_BOARD_ORG_NAME:
             return PERSONAL_ORG_ID
 
-        for org in global_orgs:
-            if (org.get("name") or "").strip() != name or not org.get("id"):
-                continue
-            creator_type = org.get("created_by_type") or SUPER_ADMIN_TENANT_TYPE
-            creator_id = str(org.get("created_by_id") or "")
-            if owner_tenant_type == SUPER_ADMIN_TENANT_TYPE and creator_type == SUPER_ADMIN_TENANT_TYPE:
-                return str(org["id"])
-            if (
-                owner_tenant_type == USER_TENANT_TYPE
-                and creator_type == USER_TENANT_TYPE
-                and creator_id == str(owner_tenant_id)
-            ):
+        for org in organizations:
+            if (org.get("name") or "").strip() == name and org.get("id"):
                 return str(org["id"])
 
-        return resolve_org_id(name, global_orgs)
+        return resolve_org_id(
+            name,
+            organizations,
+            created_by_type=owner_tenant_type,
+            created_by_id=owner_tenant_id,
+        )
 
     @staticmethod
     def _owner_ctx_from_share(share: dict[str, Any]) -> dict[str, Any]:

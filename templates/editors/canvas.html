@@ -12,6 +12,8 @@
     data-card-title="{{ card_title }}"
     data-return-url="{{ return_url }}"
     data-editor-key="{{ editor_key }}"
+    data-owner-tenant-type="{{ owner_tenant_type }}"
+    data-owner-tenant-id="{{ owner_tenant_id }}"
 >
     <div id="root"></div>
     <script type="module" src="{{ url_for('static', filename='apps/' ~ static_app ~ '/app.js') }}"></script>

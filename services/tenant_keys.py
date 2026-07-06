@@ -29,6 +29,11 @@ def user_shared_org_index_key(user_id: str) -> str:
     return f"{user_scope_root(user_id)}:shared_org_index"
 
 
+def user_organizations_key(user_id: str) -> str:
+    """用户自建项目组织列表 Hash，field=org_id。"""
+    return f"{user_scope_root(user_id)}:organizations"
+
+
 def shared_org_index_entry_id(owner_tenant_type: str, owner_tenant_id: str, organization_id: str) -> str:
     raw = f"{owner_tenant_type}:{owner_tenant_id}:{organization_id}"
     digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]

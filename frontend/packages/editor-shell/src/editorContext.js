@@ -1,10 +1,14 @@
 export function readEditorContext() {
-  const { boardId, cardId, cardTitle, returnUrl } = document.body.dataset;
+  const { boardId, cardId, cardTitle, returnUrl, editorKey, ownerTenantType, ownerTenantId } =
+    document.body.dataset;
   return {
     boardId,
     cardId,
     cardTitle: cardTitle || "",
     returnUrl: returnUrl || `#/board/${boardId}`,
+    editorKey: editorKey || "",
+    ownerTenantType: ownerTenantType || "",
+    ownerTenantId: ownerTenantId || "",
   };
 }
 
@@ -24,28 +28,76 @@ export function normalizeReturnHref(returnUrl, boardId) {
   return `/#${returnUrl.replace(/^\//, "")}`;
 }
 
-export function createEditorApi(boardId, cardId, editorKey, payloadField) {
+function readOwnerHeaders(context) {
+  const params = new URLSearchParams(window.location.search);
+  const ownerType = params.get("owner_tenant_type") || context.ownerTenantType;
+  const ownerId = params.get("owner_tenant_id") || context.ownerTenantId;
+  if (ownerType && ownerId) {
+    return {
+      "X-Board-Owner-Type": ownerType,
+      "X-Board-Owner-Id": ownerId,
+    };
+  }
+  return {};
+}
+
+export function createEditorApi(boardId, cardId, editorKey, payloadField, options = {}) {
   const basePath = `/api/boards/${boardId}/cards/${cardId}/${editorKey}`;
+  const context = readEditorContext();
+  const getLockToken = options.getLockToken || (() => "");
+  const getRevision = options.getRevision || (() => 0);
+  const onRevisionChange = options.onRevisionChange;
+
+  const buildHeaders = () => {
+    const headers = {
+      "Content-Type": "application/json",
+      ...readOwnerHeaders(context),
+    };
+    const token = getLockToken();
+    if (token) {
+      headers["X-Edit-Lock-Token"] = token;
+    }
+    return headers;
+  };
+
+  const parseResponse = async (response) => {
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(data.message || `请求失败 (${response.status})`);
+      error.status = response.status;
+      error.data = data;
+      throw error;
+    }
+    if (data.revision != null && onRevisionChange) {
+      onRevisionChange(data.revision);
+    }
+    return data;
+  };
 
   return {
     async load() {
-      const response = await fetch(basePath);
-      if (!response.ok) {
-        throw new Error(`加载失败 (${response.status})`);
+      const response = await fetch(basePath, {
+        credentials: "same-origin",
+        headers: readOwnerHeaders(context),
+      });
+      const data = await parseResponse(response);
+      if (data.revision != null && onRevisionChange) {
+        onRevisionChange(data.revision);
       }
-      const data = await response.json();
       return data[payloadField] ?? null;
     },
-    async save(payload) {
+    async save(payload, saveOptions = {}) {
       const response = await fetch(basePath, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ [payloadField]: payload }),
+        credentials: "same-origin",
+        headers: buildHeaders(),
+        body: JSON.stringify({
+          [payloadField]: payload,
+          base_revision: saveOptions.base_revision ?? getRevision(),
+          force: Boolean(saveOptions.force),
+        }),
       });
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.message || "保存失败");
-      }
+      await parseResponse(response);
     },
     saveOnPageHide(getPayload) {
       const handler = () => {
@@ -55,8 +107,12 @@ export function createEditorApi(boardId, cardId, editorKey, payloadField) {
         }
         fetch(basePath, {
           method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ [payloadField]: payload }),
+          credentials: "same-origin",
+          headers: buildHeaders(),
+          body: JSON.stringify({
+            [payloadField]: payload,
+            base_revision: getRevision(),
+          }),
           keepalive: true,
         }).catch(() => {});
       };

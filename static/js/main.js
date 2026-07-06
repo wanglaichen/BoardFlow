@@ -25,6 +25,7 @@ const state = {
         projects: true,
         sharedProjects: true,
     },
+    boardEditLocks: {},
 };
 
 const PERSONAL_BOARD_ORGANIZATION = "个人看板";
@@ -657,6 +658,7 @@ function updateNavAuth() {
     const loggedIn = Boolean(state.authUser);
     if (settingsBtn) {
         settingsBtn.classList.toggle("d-none", !loggedIn);
+        settingsBtn.href = getDefaultSettingsHash();
     }
     if (createBtn) {
         createBtn.classList.toggle("d-none", !loggedIn);
@@ -876,19 +878,13 @@ function renderRoute() {
         return;
     }
     if (hash === "#/settings" || hash.startsWith("#/settings/")) {
-        const activeTab = resolveSettingsTab(location.hash);
-        const allowedTabs = getVisibleSettingsTabs().map((tab) => tab.id);
-        if (!allowedTabs.includes(activeTab)) {
-            showError("无权访问该设置页");
-            location.hash = "#/home/personal";
-            renderBoardList();
-            return;
+        const activeTab = resolveSettingsTab(hash);
+        const targetHash = `#/settings/${activeTab}`;
+        const normalized = hash.split("?")[0];
+        if (normalized !== targetHash) {
+            history.replaceState(null, "", targetHash);
         }
-        if (hash === "#/settings") {
-            const defaultTab = state.authUser?.is_super_admin ? "statuses" : "my-organizations";
-            history.replaceState(null, "", `#/settings/${defaultTab}`);
-        }
-        renderSettingsPage(resolveSettingsTab(location.hash));
+        renderSettingsPage(activeTab);
         return;
     }
     if (hash.startsWith("#/home")) {
@@ -1692,11 +1688,22 @@ const EDITABLE_FONT_SCOPES = [
 const SETTINGS_TABS = [
     { id: "statuses", label: "看板状态", hash: "#/settings/statuses", icon: "◉", adminOnly: true },
     { id: "organizations", label: "所属组织", hash: "#/settings/organizations", icon: "▤", adminOnly: true },
-    { id: "my-organizations", label: "我的项目", hash: "#/settings/my-organizations", icon: "▤", userOnly: true },
+    { id: "my-organizations", label: "所属组织", hash: "#/settings/my-organizations", icon: "▤", userOnly: true },
+    { id: "user-board-transfer", label: "看板导入导出", hash: "#/settings/board-transfer", icon: "⇄", userOnly: true },
     { id: "fonts", label: "字体", hash: "#/settings/fonts", icon: "A", adminOnly: true },
+    { id: "collaboration", label: "协作锁", hash: "#/settings/collaboration", icon: "🔒", adminOnly: true },
     { id: "users", label: "用户管理", hash: "#/settings/users", icon: "👤", adminOnly: true },
     { id: "data-transfer", label: "导入导出", hash: "#/settings/data-transfer", icon: "⇅", adminOnly: true },
+    { id: "board-compare", label: "多平台对比", hash: "#/settings/board-compare", icon: "⇄", adminOnly: true },
 ];
+
+function getDefaultSettingsTab() {
+    return state.authUser?.is_super_admin ? "statuses" : "my-organizations";
+}
+
+function getDefaultSettingsHash() {
+    return `#/settings/${getDefaultSettingsTab()}`;
+}
 
 function getVisibleSettingsTabs() {
     const isAdmin = Boolean(state.authUser?.is_super_admin);
@@ -1713,22 +1720,38 @@ function getVisibleSettingsTabs() {
 
 function resolveSettingsTab(hash = location.hash) {
     const normalized = hash.split("?")[0];
+    const defaultTab = getDefaultSettingsTab();
+    if (normalized === "#/settings") {
+        return defaultTab;
+    }
     if (normalized.startsWith("#/settings/users")) {
         return "users";
     }
     if (normalized.startsWith("#/settings/organizations")) {
-        return "organizations";
+        return state.authUser?.is_super_admin ? "organizations" : "my-organizations";
     }
     if (normalized.startsWith("#/settings/my-organizations")) {
         return "my-organizations";
     }
+    if (normalized.startsWith("#/settings/board-transfer")) {
+        return "user-board-transfer";
+    }
     if (normalized.startsWith("#/settings/data-transfer")) {
         return "data-transfer";
+    }
+    if (normalized.startsWith("#/settings/board-compare")) {
+        return "board-compare";
     }
     if (normalized.startsWith("#/settings/fonts")) {
         return "fonts";
     }
-    return "statuses";
+    if (normalized.startsWith("#/settings/collaboration")) {
+        return "collaboration";
+    }
+    if (normalized.startsWith("#/settings/statuses")) {
+        return state.authUser?.is_super_admin ? "statuses" : defaultTab;
+    }
+    return defaultTab;
 }
 
 function resolveEditableFontFamilyStack(familyId) {
@@ -2162,28 +2185,106 @@ function renderFontSettingsPanel(fonts = getEditableFontsSettingsForPanel()) {
     `;
 }
 
+function getCollaborationSettings() {
+    const collab = state.settings?.collaboration || {};
+    return {
+        enabled: collab.enabled !== false,
+        card_optimistic_lock: collab.card_optimistic_lock !== false,
+        editor_exclusive_lock: collab.editor_exclusive_lock !== false,
+        lease_ttl_sec: Number(collab.lease_ttl_sec) || 300,
+        heartbeat_interval_sec: Number(collab.heartbeat_interval_sec) || 60,
+        allow_force_takeover: Boolean(collab.allow_force_takeover),
+    };
+}
+
+function renderCollaborationSettingsPanel() {
+    const collab = getCollaborationSettings();
+    return `
+        <div class="settings-panel">
+            <h2>多人协作</h2>
+            <p class="panel-desc">
+                卡片模态框字段使用乐观锁（revision 冲突提示）；画布/脑图/表格使用独占编辑锁。
+                锁租约默认 5 分钟无心跳自动释放，前端每 1 分钟续期一次。
+            </p>
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label d-flex gap-2 align-items-center">
+                        <input type="checkbox" id="collabEnabled" ${collab.enabled ? "checked" : ""}>
+                        启用协作控制
+                    </label>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label d-flex gap-2 align-items-center">
+                        <input type="checkbox" id="collabCardLock" ${collab.card_optimistic_lock ? "checked" : ""}>
+                        卡片字段乐观锁
+                    </label>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label d-flex gap-2 align-items-center">
+                        <input type="checkbox" id="collabEditorLock" ${collab.editor_exclusive_lock ? "checked" : ""}>
+                        重型编辑器独占锁
+                    </label>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label" for="collabLeaseTtl">锁租约（秒）</label>
+                    <input class="form-control" id="collabLeaseTtl" type="number" min="30" max="3600" value="${collab.lease_ttl_sec}">
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label" for="collabHeartbeat">心跳间隔（秒）</label>
+                    <input class="form-control" id="collabHeartbeat" type="number" min="30" max="3600" value="${collab.heartbeat_interval_sec}">
+                </div>
+            </div>
+            <div class="settings-toolbar">
+                <button class="btn btn-primary" id="saveCollaborationSettingsBtn" type="button">保存协作设置</button>
+            </div>
+        </div>
+    `;
+}
+
+function bindCollaborationSettingsPanel() {
+    document.getElementById("saveCollaborationSettingsBtn")?.addEventListener("click", () => {
+        saveCollaborationSettings().catch((error) => showError(error.message || "保存协作设置失败"));
+    });
+}
+
+async function saveCollaborationSettings() {
+    const payload = {
+        enabled: document.getElementById("collabEnabled")?.checked ?? true,
+        card_optimistic_lock: document.getElementById("collabCardLock")?.checked ?? true,
+        editor_exclusive_lock: document.getElementById("collabEditorLock")?.checked ?? true,
+        lease_ttl_sec: Number(document.getElementById("collabLeaseTtl")?.value || 300),
+        heartbeat_interval_sec: Number(document.getElementById("collabHeartbeat")?.value || 60),
+    };
+    const result = await api("/api/settings/collaboration", {
+        method: "PUT",
+        body: JSON.stringify({ collaboration: payload }),
+    });
+    state.settings = result.settings || state.settings;
+    showSuccess(result.message || "协作设置已保存");
+}
+
 function getOwnedBoards() {
     return (state.boards || []).filter((board) => !board.shared);
 }
 
-function renderOrgBoardTransferBlock(options = {}) {
+function formatBoardTransferOptionLabel(board) {
+    const title = (board.title || board.id || "未命名看板").trim();
+    const orgName = normalizeBoardOrganization(board.organization);
+    return `${title}（${orgName}）`;
+}
+
+function renderOrgTransferSection(options = {}) {
     const {
         prefix = "ownerTransfer",
-        ownerOnly = true,
         orgDesc = "导出/导入您创建的组织下看板。导入默认合并，可选覆盖该组织下已有看板。",
-        boardDesc = "导出/导入您创建的单个看板（含画布/脑图/表格/描述数据）。",
     } = options;
     const organizations = getOrganizations();
-    const boards = getOwnedBoards();
     const orgOptions = [
         `<option value="org_0">${escapeHtml(PERSONAL_BOARD_ORGANIZATION)}</option>`,
         ...organizations.map(
             (org) => `<option value="${escapeHtml(org.id)}">${escapeHtml(org.name)}</option>`
         ),
     ].join("");
-    const boardOptions = boards.length
-        ? boards.map((board) => `<option value="${escapeHtml(board.id)}">${escapeHtml(board.title)}</option>`).join("")
-        : `<option value="">暂无看板</option>`;
 
     return `
         <div class="transfer-section">
@@ -2207,7 +2308,25 @@ function renderOrgBoardTransferBlock(options = {}) {
             </div>
             <div class="transfer-report" id="${prefix}ImportOrgReport"></div>
         </div>
+    `;
+}
 
+function renderBoardTransferSection(options = {}) {
+    const {
+        prefix = "ownerTransfer",
+        boardDesc = "导出/导入您创建的单个看板（含画布/脑图/表格/描述数据）。",
+    } = options;
+    const boards = getOwnedBoards();
+    const boardOptions = boards.length
+        ? boards
+              .map(
+                  (board) =>
+                      `<option value="${escapeHtml(board.id)}">${escapeHtml(formatBoardTransferOptionLabel(board))}</option>`
+              )
+              .join("")
+        : `<option value="">暂无看板</option>`;
+
+    return `
         <div class="transfer-section">
             <h3>看板导入导出</h3>
             <p class="transfer-desc">${boardDesc}</p>
@@ -2232,12 +2351,689 @@ function renderOrgBoardTransferBlock(options = {}) {
     `;
 }
 
+function renderOrgBoardTransferBlock(options = {}) {
+    return renderOrgTransferSection(options) + renderBoardTransferSection(options);
+}
+
+function renderUserBoardTransferPanel() {
+    return `
+        <div class="settings-panel">
+            <h2>看板导入导出</h2>
+            <p class="panel-desc">
+                导出/导入单个看板数据包（.dat），含列表、卡片及画布/脑图/表格/描述数据。
+                数据包内会携带组织名称与唯一标识；导入时将自动创建或归并到已有组织，无需单独导出组织。
+                分享的看板不在此列表中。
+            </p>
+            ${renderBoardTransferSection({
+                prefix: "personalBoardTransfer",
+                boardDesc: "选择看板导出；导入时根据包内组织信息自动归并到您的组织列表。",
+            })}
+        </div>
+    `;
+}
+
+function renderBoardComparePanel() {
+    return `
+        <div class="compare-page-wrap">
+        <div class="settings-panel">
+            <h2>多平台看板对比</h2>
+            <p class="panel-desc">
+                将<strong>当前实例</strong>与另一台 BoardFlow 部署进行渐进式对比。数据按「账号 → 看板」分批拉取，不会一次性导出全量。
+                远程实例需开启 <code>FEDERATION_COMPARE_ENABLED=1</code> 并配置相同令牌。
+            </p>
+
+            <div class="compare-config">
+                <label class="compare-field">
+                    <span>远程地址</span>
+                    <input id="compareRemoteUrlInput" type="url" placeholder="https://board-flow-wheat.vercel.app" autocomplete="off">
+                </label>
+                <label class="compare-field">
+                    <span>联邦令牌</span>
+                    <input id="compareRemoteTokenInput" type="password" placeholder="与远程 FEDERATION_COMPARE_TOKEN 一致" autocomplete="off">
+                </label>
+                <label class="compare-field">
+                    <span>看板配对方式</span>
+                    <select id="compareMatchModeSelect">
+                        <option value="by_title">按标题 + 组织自动配对</option>
+                        <option value="by_id">按看板 ID 配对</option>
+                        <option value="manual">手动指定（后续阶段）</option>
+                    </select>
+                </label>
+                <div class="compare-field compare-options">
+                    <span>对比深度</span>
+                    <label class="compare-option"><input id="compareListsOption" type="checkbox" checked> 列表结构</label>
+                    <label class="compare-option"><input id="compareCardsOption" type="checkbox" checked> 卡片摘要</label>
+                    <label class="compare-option"><input id="compareDescriptionOption" type="checkbox"> 卡片描述（较慢）</label>
+                </div>
+            </div>
+
+            <div class="transfer-actions compare-actions">
+                <button class="btn btn-outline-primary" id="compareProbeBtn" type="button">探测远程连接</button>
+                <button class="btn btn-primary" id="compareRunBtn" type="button" disabled>开始对比</button>
+                <button class="btn btn-outline-secondary" id="compareResumeBtn" type="button" hidden>继续对比</button>
+            </div>
+
+            <div class="compare-remote-health" id="compareRemoteHealth" hidden></div>
+
+            <div class="transfer-clear-progress compare-progress" id="compareProgress" hidden>
+                <div class="transfer-clear-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+                    <div class="transfer-clear-progress-fill" id="compareProgressFill"></div>
+                </div>
+                <p class="transfer-clear-progress-text" id="compareProgressText"></p>
+            </div>
+
+            <div class="compare-tree" id="compareTree" hidden>
+                <h3>账号与看板拉取</h3>
+                <div id="compareTreeBody"></div>
+            </div>
+
+            <div class="compare-results" id="compareResults" hidden>
+                <h3>看板对比结果</h3>
+                <div class="compare-results-table-wrap">
+                    <table class="compare-results-table">
+                        <thead>
+                            <tr>
+                                <th>本地看板</th>
+                                <th>远程看板</th>
+                                <th>状态</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="compareResultsBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="compare-summary" id="compareSummary" hidden></div>
+        </div>
+        <div class="compare-detail-drawer" id="compareDetailDrawer" hidden>
+            <div class="compare-detail-backdrop" id="compareDetailBackdrop"></div>
+            <div class="compare-detail-panel" role="dialog" aria-modal="true" aria-labelledby="compareDetailTitle">
+                <div class="compare-detail-head">
+                    <h3 id="compareDetailTitle">对比详情</h3>
+                    <button class="btn btn-sm btn-outline-secondary" id="compareDetailCloseBtn" type="button">关闭</button>
+                </div>
+                <div class="compare-detail-body" id="compareDetailBody"></div>
+            </div>
+        </div>
+        </div>
+    `;
+}
+
+const compareUiState = {
+    sessionId: null,
+    remoteHealth: null,
+    accounts: new Map(),
+    boardPairs: [],
+    boardResults: [],
+    canResume: false,
+    resumeFromPairIndex: 0,
+};
+
+function resetCompareUiState() {
+    compareUiState.sessionId = null;
+    compareUiState.remoteHealth = null;
+    compareUiState.accounts = new Map();
+    compareUiState.boardPairs = [];
+    compareUiState.boardResults = [];
+    compareUiState.canResume = false;
+    compareUiState.resumeFromPairIndex = 0;
+}
+
+function updateCompareProgress(event) {
+    const wrap = document.getElementById("compareProgress");
+    const fill = document.getElementById("compareProgressFill");
+    const text = document.getElementById("compareProgressText");
+    if (!wrap || !fill || !text) {
+        return;
+    }
+    wrap.hidden = false;
+    const percent = Number.isFinite(event?.percent) ? event.percent : 0;
+    fill.style.width = `${percent}%`;
+    fill.parentElement?.setAttribute("aria-valuenow", String(percent));
+    text.textContent = describeCompareEvent(event);
+}
+
+function describeCompareEvent(event) {
+    const step = event?.step || "";
+    if (step === "session_started") {
+        return "对比会话已启动…";
+    }
+    if (step === "accounts_local") {
+        return `正在拉取本地账号（本批 ${(event.items || []).length} 个）…`;
+    }
+    if (step === "accounts_remote") {
+        return `正在拉取远程账号（本批 ${(event.items || []).length} 个）…`;
+    }
+    if (step === "accounts_matched") {
+        const matched = (event.pairs || []).filter((item) => item.status === "matched").length;
+        return `账号对齐完成：${matched} 组匹配`;
+    }
+    if (step === "boards_local") {
+        return `本地看板 · ${event.display_name || event.tenant_id}（本批 ${(event.items || []).length} 个）`;
+    }
+    if (step === "boards_remote") {
+        return `远程看板 · ${event.display_name || event.tenant_id}（本批 ${(event.items || []).length} 个）`;
+    }
+    if (step === "session_resumed") {
+        return `从断点继续，从第 ${(event.resume_from_pair_index || 0) + 1} 组看板开始…`;
+    }
+    if (step === "board_pair_queued") {
+        return `排队对比：${event.local_title || event.local_board_id || "—"} ↔ ${event.remote_title || event.remote_board_id || "—"}`;
+    }
+    if (step === "board_meta_diff") {
+        return `元数据对比 · 看板 ${event.local_board_id || ""}`;
+    }
+    if (step === "board_lists_diff") {
+        return `列表结构对比 · 看板 ${event.local_board_id || ""}`;
+    }
+    if (step === "board_cards_diff") {
+        return `卡片对比 · 列表 ${event.list_id || ""}`;
+    }
+    if (step === "board_pair_done") {
+        const status = event.summary?.status || "equal";
+        return `看板对比完成：${compareStatusLabel(status)}`;
+    }
+    if (step === "session_done") {
+        const totals = event.totals || {};
+        return `全部完成：一致 ${totals.boards_equal || 0} · 有差异 ${totals.boards_changed || 0}`;
+    }
+    if (step === "error") {
+        return event.message || "对比失败";
+    }
+    return event?.message || "处理中…";
+}
+
+function ensureCompareAccountNode(accountKey, displayName, status) {
+    if (!compareUiState.accounts.has(accountKey)) {
+        compareUiState.accounts.set(accountKey, {
+            displayName,
+            status,
+            localBoards: [],
+            remoteBoards: [],
+        });
+    }
+    const node = compareUiState.accounts.get(accountKey);
+    if (displayName) {
+        node.displayName = displayName;
+    }
+    if (status) {
+        node.status = status;
+    }
+    return node;
+}
+
+function accountKeyFromParts(tenantType, tenantId) {
+    return `${tenantType}:${tenantId}`;
+}
+
+function renderCompareTree() {
+    const tree = document.getElementById("compareTree");
+    const body = document.getElementById("compareTreeBody");
+    if (!tree || !body) {
+        return;
+    }
+    if (!compareUiState.accounts.size) {
+        tree.hidden = true;
+        body.innerHTML = "";
+        return;
+    }
+    tree.hidden = false;
+    const statusLabels = {
+        matched: "已匹配",
+        only_local: "仅本地",
+        only_remote: "仅远程",
+    };
+    body.innerHTML = Array.from(compareUiState.accounts.entries())
+        .map(([key, node]) => {
+            const boardsHtml = [...node.localBoards, ...node.remoteBoards]
+                .filter((board, index, list) => list.findIndex((item) => item.side === board.side && item.id === board.id) === index)
+                .map((board) => {
+                    const sideLabel = board.side === "local" ? "本地" : "远程";
+                    return `<li class="compare-board-item compare-board-item--${board.side}">
+                        <span class="compare-board-side">${sideLabel}</span>
+                        <strong>${escapeHtml(board.title || board.id)}</strong>
+                        <span class="compare-board-meta">${escapeHtml(board.organization || "—")} · ${board.list_count || 0} 列表 · ${board.card_count || 0} 卡片</span>
+                    </li>`;
+                })
+                .join("");
+            return `
+                <details class="compare-account-node" open>
+                    <summary>
+                        <span class="compare-account-name">${escapeHtml(node.displayName || key)}</span>
+                        <span class="compare-account-status compare-account-status--${escapeHtml(node.status || "matched")}">${escapeHtml(statusLabels[node.status] || node.status || "")}</span>
+                    </summary>
+                    <ul class="compare-board-list">${boardsHtml || '<li class="compare-board-empty">暂无看板</li>'}</ul>
+                </details>
+            `;
+        })
+        .join("");
+}
+
+function compareStatusLabel(status) {
+    const labels = {
+        equal: "一致",
+        changed: "有差异",
+        only_local: "仅本地",
+        only_remote: "仅远程",
+        error: "错误",
+    };
+    return labels[status] || status || "—";
+}
+
+function renderCompareResults() {
+    const wrap = document.getElementById("compareResults");
+    const body = document.getElementById("compareResultsBody");
+    if (!wrap || !body) {
+        return;
+    }
+    if (!compareUiState.boardResults.length) {
+        wrap.hidden = true;
+        body.innerHTML = "";
+        return;
+    }
+    wrap.hidden = false;
+    body.innerHTML = compareUiState.boardResults
+        .map((item) => {
+            const status = item.status || "equal";
+            return `
+                <tr>
+                    <td>${escapeHtml(item.local_title || item.local_board_id || "—")}</td>
+                    <td>${escapeHtml(item.remote_title || item.remote_board_id || "—")}</td>
+                    <td><span class="compare-result-badge compare-result-badge--${escapeHtml(status)}">${escapeHtml(compareStatusLabel(status))}</span></td>
+                    <td><button class="btn btn-sm btn-outline-primary compare-detail-btn" data-pair-index="${item.pair_index}" type="button">详情</button></td>
+                </tr>
+            `;
+        })
+        .join("");
+    body.querySelectorAll(".compare-detail-btn").forEach((button) => {
+        button.addEventListener("click", () => {
+            const pairIndex = Number(button.dataset.pairIndex);
+            openCompareDetail(pairIndex);
+        });
+    });
+}
+
+function renderCompareDetailContent(result) {
+    if (!result) {
+        return "<p>暂无详情</p>";
+    }
+    const sections = [];
+    if (result.error) {
+        sections.push(`<p class="compare-detail-error">${escapeHtml(result.error)}</p>`);
+    }
+    if (result.meta) {
+        const fields = result.meta.fields || {};
+        const fieldRows = Object.entries(fields)
+            .map(([key, value]) => {
+                const localValue = value?.local ?? "—";
+                const remoteValue = value?.remote ?? "—";
+                return `<tr><td>${escapeHtml(key)}</td><td>${escapeHtml(String(localValue))}</td><td>${escapeHtml(String(remoteValue))}</td></tr>`;
+            })
+            .join("");
+        sections.push(`
+            <section class="compare-detail-section">
+                <h4>看板元数据 <span class="compare-result-badge compare-result-badge--${escapeHtml(result.meta.status || "equal")}">${escapeHtml(compareStatusLabel(result.meta.status))}</span></h4>
+                ${fieldRows ? `<table class="compare-detail-table"><thead><tr><th>字段</th><th>本地</th><th>远程</th></tr></thead><tbody>${fieldRows}</tbody></table>` : '<p class="compare-detail-empty">无字段差异</p>'}
+            </section>
+        `);
+    }
+    if (result.lists) {
+        const added = (result.lists.added || []).map((item) => `<li>+ ${escapeHtml(item.title || item.id)}</li>`).join("");
+        const removed = (result.lists.removed || []).map((item) => `<li>- ${escapeHtml(item.title || item.id)}</li>`).join("");
+        const changed = (result.lists.changed || [])
+            .map((item) => {
+                const fields = Object.entries(item.fields || {})
+                    .map(([key, value]) => `${key}: ${JSON.stringify(value.local)} → ${JSON.stringify(value.remote)}`)
+                    .join("; ");
+                return `<li>Δ ${escapeHtml(item.id)} ${escapeHtml(fields)}</li>`;
+            })
+            .join("");
+        sections.push(`
+            <section class="compare-detail-section">
+                <h4>列表结构 <span class="compare-result-badge compare-result-badge--${escapeHtml(result.lists.status || "equal")}">${escapeHtml(compareStatusLabel(result.lists.status))}</span></h4>
+                <ul class="compare-detail-list">${added}${removed}${changed || ""}</ul>
+                ${!added && !removed && !changed ? '<p class="compare-detail-empty">无列表差异</p>' : ""}
+            </section>
+        `);
+    }
+    const cardsByList = result.cards?.by_list || {};
+    const listIds = Object.keys(cardsByList);
+    if (listIds.length) {
+        const cardsHtml = listIds
+            .map((listId) => {
+                const diff = cardsByList[listId] || {};
+                const added = (diff.added || []).length;
+                const removed = (diff.removed || []).length;
+                const changed = (diff.changed || []).length;
+                return `<li>列表 ${escapeHtml(listId)}：+${added} -${removed} Δ${changed}</li>`;
+            })
+            .join("");
+        sections.push(`
+            <section class="compare-detail-section">
+                <h4>卡片摘要</h4>
+                <ul class="compare-detail-list">${cardsHtml}</ul>
+            </section>
+        `);
+    }
+    return sections.join("") || "<p>暂无详情</p>";
+}
+
+function updateCompareResumeButton() {
+    const resumeBtn = document.getElementById("compareResumeBtn");
+    if (!resumeBtn) {
+        return;
+    }
+    resumeBtn.hidden = !compareUiState.canResume || !compareUiState.sessionId;
+}
+
+async function fetchComparePairDetail(pairIndex) {
+    const response = await fetch(
+        `/api/compare/sessions/${encodeURIComponent(compareUiState.sessionId)}/results?pair_index=${encodeURIComponent(pairIndex)}`,
+    );
+    const payload = await response.json();
+    if (!response.ok) {
+        throw new Error(payload.message || "加载对比详情失败");
+    }
+    return payload;
+}
+
+async function openCompareDetail(pairIndex) {
+    const drawer = document.getElementById("compareDetailDrawer");
+    const title = document.getElementById("compareDetailTitle");
+    const body = document.getElementById("compareDetailBody");
+    if (!drawer || !body || !compareUiState.sessionId) {
+        return;
+    }
+    body.innerHTML = `<p class="compare-detail-empty">加载中…</p>`;
+    drawer.hidden = false;
+    try {
+        const result = await fetchComparePairDetail(pairIndex);
+        if (title) {
+            title.textContent = `${result?.local_title || "本地"} ↔ ${result?.remote_title || "远程"}`;
+        }
+        body.innerHTML = renderCompareDetailContent(result);
+    } catch (error) {
+        body.innerHTML = `<p class="compare-detail-error">${escapeHtml(error.message || "加载失败")}</p>`;
+    }
+}
+
+function closeCompareDetail() {
+    const drawer = document.getElementById("compareDetailDrawer");
+    if (drawer) {
+        drawer.hidden = true;
+    }
+}
+
+function renderCompareSummary(event) {
+    const summary = document.getElementById("compareSummary");
+    if (!summary) {
+        return;
+    }
+    const totals = event?.totals || {};
+    if (!event?.done) {
+        summary.hidden = true;
+        return;
+    }
+    summary.hidden = false;
+    summary.innerHTML = `
+        <p>本地账号 <strong>${totals.local_accounts || 0}</strong> · 远程账号 <strong>${totals.remote_accounts || 0}</strong> · 匹配账号 <strong>${totals.matched_accounts || 0}</strong></p>
+        <p>看板对比：一致 <strong>${totals.boards_equal || 0}</strong> · 有差异 <strong>${totals.boards_changed || 0}</strong> · 仅本地 <strong>${totals.boards_only_local || 0}</strong> · 仅远程 <strong>${totals.boards_only_remote || 0}</strong></p>
+    `;
+    renderCompareResults();
+}
+
+function applyCompareStreamEvent(event) {
+    if (!event) {
+        return;
+    }
+    updateCompareProgress(event);
+
+    if (event.step === "accounts_matched") {
+        compareUiState.accounts.clear();
+        for (const pair of event.pairs || []) {
+            if (pair.local) {
+                const key = accountKeyFromParts(pair.local.tenant_type, pair.local.tenant_id);
+                ensureCompareAccountNode(key, pair.local.display_name, pair.status);
+            }
+            if (pair.remote && pair.status === "only_remote") {
+                const key = accountKeyFromParts(pair.remote.tenant_type, pair.remote.tenant_id);
+                ensureCompareAccountNode(key, pair.remote.display_name, pair.status);
+            }
+        }
+        renderCompareTree();
+    }
+
+    if (event.step === "boards_local" || event.step === "boards_remote") {
+        const key = accountKeyFromParts(event.tenant_type, event.tenant_id);
+        const node = ensureCompareAccountNode(key, event.display_name, "matched");
+        const side = event.step === "boards_local" ? "local" : "remote";
+        const target = side === "local" ? node.localBoards : node.remoteBoards;
+        for (const board of event.items || []) {
+            target.push({ ...board, side });
+        }
+        renderCompareTree();
+    }
+
+    if (event.step === "board_pair_queued") {
+        compareUiState.boardPairs.push(event);
+    }
+
+    if (event.step === "board_pair_done" && event.summary) {
+        const existingIndex = compareUiState.boardResults.findIndex(
+            (item) => Number(item.pair_index) === Number(event.summary.pair_index),
+        );
+        if (existingIndex >= 0) {
+            compareUiState.boardResults[existingIndex] = event.summary;
+        } else {
+            compareUiState.boardResults.push(event.summary);
+        }
+        renderCompareResults();
+    }
+
+    if (event.step === "session_done") {
+        renderCompareSummary(event);
+    }
+}
+
+async function createCompareSession(payload) {
+    const response = await fetch("/api/compare/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+        throw new Error(result.message || "创建对比会话失败");
+    }
+    return result;
+}
+
+async function runCompareSession(sessionId, onProgress, runOptions = {}) {
+    const response = await fetch(`/api/compare/sessions/${encodeURIComponent(sessionId)}/run`, {
+        method: "POST",
+        headers: {
+            Accept: "application/x-ndjson",
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify(runOptions || {}),
+    });
+    if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.message || "对比请求失败");
+    }
+    if (!response.body) {
+        throw new Error("浏览器不支持流式进度响应");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let lastEvent = null;
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+            break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) {
+                continue;
+            }
+            const event = JSON.parse(trimmed);
+            lastEvent = event;
+            onProgress?.(event);
+            applyCompareStreamEvent(event);
+            if (event.error && event.fatal) {
+                throw new Error(event.message || "对比失败");
+            }
+        }
+    }
+
+    const tail = buffer.trim();
+    if (tail) {
+        const event = JSON.parse(tail);
+        lastEvent = event;
+        onProgress?.(event);
+        applyCompareStreamEvent(event);
+        if (event.error && event.fatal) {
+            throw new Error(event.message || "对比失败");
+        }
+    }
+
+    if (!lastEvent?.done) {
+        compareUiState.canResume = Boolean(compareUiState.sessionId);
+        compareUiState.resumeFromPairIndex = compareUiState.boardResults.length;
+        updateCompareResumeButton();
+        throw new Error("对比未完成，可点击「继续对比」从断点续跑");
+    }
+    compareUiState.canResume = false;
+    updateCompareResumeButton();
+    return lastEvent;
+}
+
+function bindBoardComparePanel() {
+    const remoteUrlInput = document.getElementById("compareRemoteUrlInput");
+    const remoteTokenInput = document.getElementById("compareRemoteTokenInput");
+    const matchModeSelect = document.getElementById("compareMatchModeSelect");
+    const probeBtn = document.getElementById("compareProbeBtn");
+    const runBtn = document.getElementById("compareRunBtn");
+    const resumeBtn = document.getElementById("compareResumeBtn");
+    const healthBox = document.getElementById("compareRemoteHealth");
+
+    if (!remoteUrlInput || !probeBtn || !runBtn) {
+        return;
+    }
+
+    const runCompareFlow = async (runOptions = {}) => {
+        const sessionId = compareUiState.sessionId;
+        if (!sessionId) {
+            showError("请先探测远程连接");
+            return;
+        }
+        clearError();
+        if (!runOptions.from_phase) {
+            resetCompareUiState();
+            compareUiState.sessionId = sessionId;
+            renderCompareTree();
+            const summaryEl = document.getElementById("compareSummary");
+            if (summaryEl) {
+                summaryEl.hidden = true;
+            }
+        }
+        runBtn.disabled = true;
+        resumeBtn.disabled = true;
+        probeBtn.disabled = true;
+        try {
+            await runCompareSession(sessionId, updateCompareProgress, runOptions);
+            showSuccess("多平台看板对比已完成");
+        } catch (error) {
+            showError(error.message || "对比失败");
+        } finally {
+            runBtn.disabled = false;
+            resumeBtn.disabled = false;
+            probeBtn.disabled = false;
+            updateCompareResumeButton();
+        }
+    };
+
+    const getPayload = () => ({
+        remote_base_url: remoteUrlInput.value.trim(),
+        remote_token: remoteTokenInput?.value || "",
+        match_mode: matchModeSelect?.value || "by_title",
+        pairs: [],
+        options: {
+            compare_lists: document.getElementById("compareListsOption")?.checked !== false,
+            compare_cards: document.getElementById("compareCardsOption")?.checked !== false,
+            compare_card_description: document.getElementById("compareDescriptionOption")?.checked === true,
+        },
+    });
+
+    probeBtn.addEventListener("click", async () => {
+        clearError();
+        resetCompareUiState();
+        renderCompareTree();
+        const summaryEl = document.getElementById("compareSummary");
+        const progressEl = document.getElementById("compareProgress");
+        if (summaryEl) {
+            summaryEl.hidden = true;
+        }
+        if (progressEl) {
+            progressEl.hidden = true;
+        }
+        runBtn.disabled = true;
+        probeBtn.disabled = true;
+        try {
+            const result = await createCompareSession(getPayload());
+            compareUiState.sessionId = result.session_id;
+            compareUiState.remoteHealth = result.remote_health;
+            runBtn.disabled = false;
+            if (healthBox) {
+                healthBox.hidden = false;
+                const health = result.remote_health || {};
+                const federation = health.federation || {};
+                healthBox.innerHTML = `
+                    <p class="compare-health-ok">远程连接成功：${escapeHtml(health.label || health.version || "")} · 联邦 API v${escapeHtml(String(federation.api_version || ""))}</p>
+                `;
+            }
+            showSuccess("远程连接探测成功");
+        } catch (error) {
+            if (healthBox) {
+                healthBox.hidden = false;
+                healthBox.innerHTML = `<p class="compare-health-error">${escapeHtml(error.message || "连接失败")}</p>`;
+            }
+            showError(error.message || "远程连接探测失败");
+        } finally {
+            probeBtn.disabled = false;
+        }
+    });
+
+    runBtn.addEventListener("click", async () => {
+        await runCompareFlow();
+    });
+
+    resumeBtn?.addEventListener("click", async () => {
+        await runCompareFlow({
+            from_phase: "diff",
+            resume_from_pair_index: compareUiState.resumeFromPairIndex,
+        });
+    });
+
+    document.getElementById("compareDetailCloseBtn")?.addEventListener("click", closeCompareDetail);
+    document.getElementById("compareDetailBackdrop")?.addEventListener("click", closeCompareDetail);
+}
+
 function renderDataTransferPanel() {
     return `
         <div class="settings-panel">
             <h2>数据导入导出</h2>
             <p class="panel-desc">
-                支持三种 .dat 数据包：<strong>系统全量</strong>、<strong>组织</strong>、<strong>单看板</strong>。
+                支持 .dat 数据包：<strong>系统全量</strong>、<strong>单看板</strong>。
+                看板包内携带组织名称与唯一标识，导入时自动创建或归并到已有组织。
                 文件为 UTF-8 JSON，首行魔数 <code>BFLOW1</code>，含 SHA256 校验和（v2）。导入前会先执行完整性检查。
             </p>
 
@@ -2259,30 +3055,30 @@ function renderDataTransferPanel() {
                 <div class="transfer-report" id="importSystemReport"></div>
             </div>
 
-            <div class="transfer-section transfer-danger-zone">
-                <h3>危险操作</h3>
-                <p class="transfer-desc">
-                    清理将删除<strong>全部</strong>用户账号、看板、列表、卡片、分享记录与系统设置，恢复为初始空数据。
-                    环境变量中的超管账号仍可登录；此操作不可撤销，建议先导出系统全量备份。
-                </p>
-                <div class="transfer-actions">
-                    <button class="btn btn-outline-danger" id="clearSystemDataBtn" type="button">清理所有系统数据</button>
-                </div>
-                <div class="transfer-clear-progress" id="clearSystemProgress" hidden>
-                    <div class="transfer-clear-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100">
-                        <div class="transfer-clear-progress-fill" id="clearSystemProgressFill"></div>
-                    </div>
-                    <p class="transfer-clear-progress-text" id="clearSystemProgressText"></p>
-                </div>
-            </div>
-
-            ${renderOrgBoardTransferBlock({
+            ${renderBoardTransferSection({
                 prefix: "adminTransfer",
-                ownerOnly: false,
-                orgDesc:
-                    "导出选定组织下<strong>所有租户</strong>的看板（含超管与用户各自创建的看板），并记录看板归属。导入时按归属写回对应租户；默认合并，可选覆盖该组织下已有看板。",
-                boardDesc: "导出您创建的单个看板及其列表、卡片（含画布/脑图/表格/描述表格数据）。",
+                boardDesc:
+                    "导出看板数据包（含组织标识与列表/卡片/编辑器数据）；导入时按包内组织信息自动创建或归并到已有组织。",
             })}
+
+            <details class="transfer-danger-zone transfer-danger-details">
+                <summary class="transfer-danger-summary">高级选项：清理全部系统数据</summary>
+                <div class="transfer-danger-body">
+                    <p class="transfer-desc">
+                        清理将删除<strong>全部</strong>用户账号、看板、列表、卡片、分享记录与系统设置，恢复为初始空数据。
+                        环境变量中的超管账号仍可登录；此操作不可撤销，建议先导出系统全量备份。
+                    </p>
+                    <div class="transfer-actions">
+                        <button class="btn btn-sm btn-outline-danger" id="clearSystemDataBtn" type="button">清理所有系统数据</button>
+                    </div>
+                    <div class="transfer-clear-progress" id="clearSystemProgress" hidden>
+                        <div class="transfer-clear-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+                            <div class="transfer-clear-progress-fill" id="clearSystemProgressFill"></div>
+                        </div>
+                        <p class="transfer-clear-progress-text" id="clearSystemProgressText"></p>
+                    </div>
+                </div>
+            </details>
         </div>
     `;
 }
@@ -2472,37 +3268,41 @@ async function clearAllSystemData(onProgress) {
 }
 
 function bindOrgBoardTransferBlock(options = {}) {
-    const { prefix = "ownerTransfer", ownerOnly = true } = options;
+    const { prefix = "ownerTransfer", ownerOnly = true, kinds = ["organization", "board"] } = options;
     const transferState = {
         organization: { file: null, validation: null },
         board: { file: null, validation: null },
     };
 
-    document.getElementById(`${prefix}ExportOrgBtn`)?.addEventListener("click", () => {
-        const orgId = document.getElementById(`${prefix}ExportOrgSelect`)?.value;
-        if (!orgId) {
-            showError("请选择组织");
-            return;
-        }
-        const scopeQuery = ownerOnly ? "?scope=owner" : "";
-        downloadDat(
-            `/api/data-transfer/export/organization/${encodeURIComponent(orgId)}${scopeQuery}`,
-            "boardflow-org.dat"
-        )
-            .then(() => showSuccess("组织数据包已开始下载"))
-            .catch((error) => showError(error.message || "导出失败"));
-    });
+    if (kinds.includes("organization")) {
+        document.getElementById(`${prefix}ExportOrgBtn`)?.addEventListener("click", () => {
+            const orgId = document.getElementById(`${prefix}ExportOrgSelect`)?.value;
+            if (!orgId) {
+                showError("请选择组织");
+                return;
+            }
+            const scopeQuery = ownerOnly ? "?scope=owner" : "";
+            downloadDat(
+                `/api/data-transfer/export/organization/${encodeURIComponent(orgId)}${scopeQuery}`,
+                "boardflow-org.dat"
+            )
+                .then(() => showSuccess("组织数据包已开始下载"))
+                .catch((error) => showError(error.message || "导出失败"));
+        });
+    }
 
-    document.getElementById(`${prefix}ExportBoardBtn`)?.addEventListener("click", () => {
-        const boardId = document.getElementById(`${prefix}ExportBoardSelect`)?.value;
-        if (!boardId) {
-            showError("请选择看板");
-            return;
-        }
-        downloadDat(`/api/data-transfer/export/board/${encodeURIComponent(boardId)}`, "boardflow-board.dat")
-            .then(() => showSuccess("看板数据包已开始下载"))
-            .catch((error) => showError(error.message || "导出失败"));
-    });
+    if (kinds.includes("board")) {
+        document.getElementById(`${prefix}ExportBoardBtn`)?.addEventListener("click", () => {
+            const boardId = document.getElementById(`${prefix}ExportBoardSelect`)?.value;
+            if (!boardId) {
+                showError("请选择看板");
+                return;
+            }
+            downloadDat(`/api/data-transfer/export/board/${encodeURIComponent(boardId)}`, "boardflow-board.dat")
+                .then(() => showSuccess("看板数据包已开始下载"))
+                .catch((error) => showError(error.message || "导出失败"));
+        });
+    }
 
     function wireImport(kind, fileInputId, reportId, importBtnId, modeSelectId) {
         const fileInput = document.getElementById(fileInputId);
@@ -2566,8 +3366,12 @@ function bindOrgBoardTransferBlock(options = {}) {
         });
     }
 
-    wireImport("organization", `${prefix}ImportOrgFile`, `${prefix}ImportOrgReport`, `${prefix}ImportOrgBtn`, `${prefix}ImportOrgMode`);
-    wireImport("board", `${prefix}ImportBoardFile`, `${prefix}ImportBoardReport`, `${prefix}ImportBoardBtn`, `${prefix}ImportBoardMode`);
+    if (kinds.includes("organization")) {
+        wireImport("organization", `${prefix}ImportOrgFile`, `${prefix}ImportOrgReport`, `${prefix}ImportOrgBtn`, `${prefix}ImportOrgMode`);
+    }
+    if (kinds.includes("board")) {
+        wireImport("board", `${prefix}ImportBoardFile`, `${prefix}ImportBoardReport`, `${prefix}ImportBoardBtn`, `${prefix}ImportBoardMode`);
+    }
 }
 
 function bindDataTransferPanel() {
@@ -2660,17 +3464,17 @@ function bindDataTransferPanel() {
         });
     });
 
-    bindOrgBoardTransferBlock({ prefix: "adminTransfer", ownerOnly: false });
+    bindOrgBoardTransferBlock({ prefix: "adminTransfer", ownerOnly: false, kinds: ["board"] });
 }
 
 function renderOrganizationSettingsPanel(organizations, isPersonal = false) {
     return `
         <div class="settings-panel">
-            <h2>${isPersonal ? "我的项目" : "所属组织"}</h2>
+            <h2>所属组织</h2>
             <p class="panel-desc">${
                 isPersonal
-                    ? "此处维护您自己创建的项目组织，仅对您可见。不同用户/管理员之间组织名称允许重复，但在您名下不可重复。保存后可在新建或编辑看板时选择。"
-                    : "「个人看板」为内置默认选项。此处维护超管创建的组织；不同账户之间组织名称允许重复。保存后可在新建或编辑看板时选择。"
+                    ? "此处维护您账号下的项目组织，数据独立存储在您的用户空间，仅对您可见。与管理员的全局组织互不影响；不同用户之间组织名称允许重复，但在您名下不可重复。保存后可在新建或编辑看板时选择。"
+                    : "「个人看板」为内置默认选项。此处维护超级管理员的全局组织；不同账户之间组织名称允许重复。保存后可在新建或编辑看板时选择。"
             }</p>
             <div class="table-responsive">
                 <table class="organization-settings-table">
@@ -2696,14 +3500,6 @@ function renderOrganizationSettingsPanel(organizations, isPersonal = false) {
                     isPersonal ? "1" : "0"
                 }">保存组织设置</button>
             </div>
-            ${renderOrgBoardTransferBlock({
-                prefix: isPersonal ? "personalTransfer" : "orgSettingsTransfer",
-                ownerOnly: true,
-                orgDesc: isPersonal
-                    ? "导出/导入您名下组织中的看板。仅组织创建者可操作。"
-                    : "导出/导入超管名下组织中的看板（不含其他用户同名组织）。",
-                boardDesc: "导出/导入您创建的看板。分享的看板不在此列表中。",
-            })}
         </div>
     `;
 }
@@ -2788,10 +3584,16 @@ function renderSettingsPage(activeTab = resolveSettingsTab()) {
     const panelHtml =
         activeTab === "data-transfer"
             ? renderDataTransferPanel()
-            : activeTab === "organizations" || activeTab === "my-organizations"
+            : activeTab === "board-compare"
+              ? renderBoardComparePanel()
+              : activeTab === "user-board-transfer"
+                  ? renderUserBoardTransferPanel()
+              : activeTab === "organizations" || activeTab === "my-organizations"
               ? renderOrganizationSettingsPanel(organizations, activeTab === "my-organizations")
               : activeTab === "fonts"
                 ? renderFontSettingsPanel()
+                : activeTab === "collaboration"
+                  ? renderCollaborationSettingsPanel()
                 : renderStatusSettingsPanel(statuses);
 
     appView.innerHTML = `
@@ -2816,8 +3618,18 @@ function renderSettingsPage(activeTab = resolveSettingsTab()) {
         return;
     }
 
+    if (activeTab === "board-compare") {
+        bindBoardComparePanel();
+        return;
+    }
+
     if (activeTab === "fonts") {
         bindFontSettingsPanel();
+        return;
+    }
+
+    if (activeTab === "collaboration") {
+        bindCollaborationSettingsPanel();
         return;
     }
 
@@ -2825,9 +3637,14 @@ function renderSettingsPage(activeTab = resolveSettingsTab()) {
         document.getElementById("addOrganizationRowBtn").addEventListener("click", addOrganizationSettingsRow);
         document.getElementById("saveOrganizationSettingsBtn").addEventListener("click", saveOrganizationSettings);
         bindOrganizationSettingsRows();
+        return;
+    }
+
+    if (activeTab === "user-board-transfer") {
         bindOrgBoardTransferBlock({
-            prefix: activeTab === "my-organizations" ? "personalTransfer" : "orgSettingsTransfer",
+            prefix: "personalBoardTransfer",
             ownerOnly: true,
+            kinds: ["board"],
         });
         return;
     }
@@ -3012,10 +3829,10 @@ async function saveOrganizationSettings() {
             method: "PUT",
             body: JSON.stringify({ organizations }),
         });
-        state.settings = { ...state.settings, ...result.settings };
+        state.settings = result.settings || state.settings;
         await loadBoards();
         renderSettingsPage(isPersonal ? "my-organizations" : "organizations");
-        showSuccess(isPersonal ? "我的项目组织已保存" : "组织列表已保存");
+        showSuccess(isPersonal ? "所属组织已保存" : "组织列表已保存");
     } catch (error) {
         showError(error.message || "保存组织失败");
     }
@@ -3445,6 +4262,7 @@ async function openBoard(boardId, cardId = null, ownerTenantType = null, ownerTe
         state.currentBoardView = loadBoardViewPreference(boardId);
         clearError();
         renderBoardPage();
+        await refreshBoardEditLocks(boardId, data.cards || []);
         if (cardId) {
             const card = findCard(cardId);
             if (card) {
@@ -4405,7 +5223,11 @@ async function submitReply(parentCommentId, content) {
 
     const result = await api(`/api/boards/${state.currentBoardId}/cards/${state.editingCard.id}/comments`, {
         method: "POST",
-        body: JSON.stringify({ content: nextContent, parent_id: parentCommentId }),
+        body: JSON.stringify({
+            content: nextContent,
+            parent_id: parentCommentId,
+            base_revision: cardRevisionValue(state.editingCard),
+        }),
     });
     syncEditingCard(result.item);
     renderComments(result.item.comments || []);
@@ -4426,7 +5248,10 @@ async function saveCommentEdit(commentId, content) {
         `/api/boards/${state.currentBoardId}/cards/${state.editingCard.id}/comments/${commentId}`,
         {
             method: "PATCH",
-            body: JSON.stringify({ content: nextContent }),
+            body: JSON.stringify({
+                content: nextContent,
+                base_revision: cardRevisionValue(state.editingCard),
+            }),
         }
     );
     syncEditingCard(result.item);
@@ -4445,7 +5270,10 @@ async function deleteComment(commentId, isReply = false) {
 
     const result = await api(
         `/api/boards/${state.currentBoardId}/cards/${state.editingCard.id}/comments/${commentId}`,
-        { method: "DELETE" }
+        {
+            method: "DELETE",
+            body: JSON.stringify({ base_revision: cardRevisionValue(state.editingCard) }),
+        }
     );
     syncEditingCard(result.item);
     renderComments(result.item.comments || []);
@@ -4480,20 +5308,70 @@ async function saveCard() {
         return;
     }
     const descriptionPayload = collectDescriptionPayload();
-    const payload = {
+    const localSnapshot = {
         title: cardTitleInput.value.trim(),
-        type: cardTypeSelect.value,
         description: descriptionPayload.description,
-        description_data: descriptionPayload.description_data,
         checklist: collectChecklistFromDom().filter((item) => item.text.trim()),
     };
-    await api(`/api/boards/${state.currentBoardId}/cards/${state.editingCard.id}`, {
-        method: "PATCH",
-        body: JSON.stringify(payload),
-    });
-    cardModal.hide();
-    showSuccess("卡片已保存");
-    await openBoard(state.currentBoardId);
+    const payload = {
+        title: localSnapshot.title,
+        type: cardTypeSelect.value,
+        description: localSnapshot.description,
+        description_data: descriptionPayload.description_data,
+        checklist: localSnapshot.checklist,
+        base_revision: cardRevisionValue(state.editingCard),
+    };
+
+    const performSave = async (body) => {
+        return api(`/api/boards/${state.currentBoardId}/cards/${state.editingCard.id}`, {
+            method: "PATCH",
+            body: JSON.stringify(body),
+        });
+    };
+
+    try {
+        await performSave(payload);
+        cardModal.hide();
+        showSuccess("卡片已保存");
+        await openBoard(state.currentBoardId);
+        return;
+    } catch (saveError) {
+        if (saveError.status !== 409 || saveError.data?.error !== "conflict") {
+            showError(saveError.message || "保存失败");
+            return;
+        }
+        const decision = await showCardConflictDialog(saveError.data, localSnapshot);
+        if (decision.action === "cancel") {
+            return;
+        }
+        if (decision.action === "reload") {
+            const current = decision.current || saveError.data.current || {};
+            state.editingCard = { ...state.editingCard, ...current };
+            cardTitleInput.value = current.title || "";
+            pendingDescriptionContent = current.description || "";
+            pendingDescriptionMode = resolveCardDescriptionMode(current);
+            if (cardDescriptionModeSelect) {
+                cardDescriptionModeSelect.value = pendingDescriptionMode;
+            }
+            applyDescriptionModeUI(pendingDescriptionMode);
+            renderChecklist(current.checklist || []);
+            showError("已加载最新版本，请合并后再次保存");
+            return;
+        }
+        if (decision.action === "force") {
+            if (!confirm("确定用当前内容覆盖其他人的修改吗？")) {
+                return;
+            }
+            try {
+                await performSave({ ...payload, force: true });
+                cardModal.hide();
+                showSuccess("卡片已保存");
+                await openBoard(state.currentBoardId);
+            } catch (forceError) {
+                showError(forceError.message || "覆盖保存失败");
+            }
+        }
+    }
 }
 
 async function deleteCurrentCard() {
@@ -4518,7 +5396,10 @@ async function submitComment() {
     }
     const result = await api(`/api/boards/${state.currentBoardId}/cards/${state.editingCard.id}/comments`, {
         method: "POST",
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({
+            content,
+            base_revision: cardRevisionValue(state.editingCard),
+        }),
     });
     syncEditingCard(result.item);
     renderComments(result.item.comments || []);
@@ -4751,7 +5632,10 @@ async function api(url, options = {}) {
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-        throw new Error(data.message || "请求失败");
+        const error = new Error(data.message || "请求失败");
+        error.status = response.status;
+        error.data = data;
+        throw error;
     }
     return data;
 }

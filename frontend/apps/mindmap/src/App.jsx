@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import MindElixir from "mind-elixir";
 import { zh_CN } from "mind-elixir/i18n";
 import {
@@ -8,11 +8,11 @@ import {
   normalizeReturnHref,
   readEditorContext,
   useAutoSave,
+  useEditLock,
 } from "@boardflow/editor-shell";
 
 const { boardId, cardId, cardTitle, returnUrl } = readEditorContext();
 const backHref = normalizeReturnHref(returnUrl, boardId);
-const mindmapApi = createEditorApi(boardId, cardId, "mindmap", "mindmap_data");
 
 function buildInitialData(topic) {
   const data = MindElixir.new(topic);
@@ -23,6 +23,17 @@ function buildInitialData(topic) {
 }
 
 export default function App() {
+  const { status: lockStatus, error: lockError, lockToken, revisionRef, setRevision } = useEditLock("mindmap");
+  const mindmapApi = useMemo(
+    () =>
+      createEditorApi(boardId, cardId, "mindmap", "mindmap_data", {
+        getLockToken: () => lockToken.current,
+        getRevision: () => revisionRef.current,
+        onRevisionChange: setRevision,
+      }),
+    [lockToken, revisionRef, setRevision]
+  );
+
   const [ready, setReady] = useState(false);
   const [savedData, setSavedData] = useState(null);
   const [error, setError] = useState("");
@@ -36,7 +47,7 @@ export default function App() {
       return;
     }
     await mindmapApi.save(mindRef.current.getData());
-  }, []);
+  }, [mindmapApi]);
 
   const { flushSave, scheduleSave, clearTimer } = useAutoSave({
     onSave: persistMindmap,
@@ -44,6 +55,9 @@ export default function App() {
   });
 
   useEffect(() => {
+    if (lockStatus !== "ready") {
+      return undefined;
+    }
     mindmapApi
       .load()
       .then((data) => {
@@ -51,16 +65,20 @@ export default function App() {
         setReady(true);
       })
       .catch((loadError) => setError(loadError.message || "加载失败"));
-  }, []);
+    return undefined;
+  }, [lockStatus, mindmapApi]);
 
   useEffect(() => {
+    if (lockStatus !== "ready") {
+      return undefined;
+    }
     return mindmapApi.saveOnPageHide(() => {
       if (!mindRef.current) {
         return null;
       }
       return mindRef.current.getData();
     });
-  }, []);
+  }, [lockStatus, mindmapApi]);
 
   useEffect(() => {
     if (!ready || !containerRef.current) {
@@ -107,6 +125,19 @@ export default function App() {
       setIsSaving(false);
     }
   };
+
+  if (lockStatus === "pending") {
+    return <div className="editor-loading">正在获取编辑锁...</div>;
+  }
+
+  if (lockStatus === "error") {
+    return (
+      <div className="editor-error">
+        <p>{lockError || "无法进入编辑模式"}</p>
+        <a href={backHref}>返回看板</a>
+      </div>
+    );
+  }
 
   if (error) {
     return <div className="editor-error">{error}</div>;

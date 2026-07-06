@@ -11,6 +11,7 @@ try:
 except ImportError:
     redis = None
 
+from services.collaboration_settings import DEFAULT_COLLABORATION, normalize_collaboration
 from services.org_keys import (
     PERSONAL_ORG_ID,
     ORG_NAMESPACE,
@@ -94,6 +95,7 @@ DEFAULT_DATA = {
         ],
         "organizations": [],
         "editable_fonts": json.loads(json.dumps(DEFAULT_EDITABLE_FONTS)),
+        "collaboration": json.loads(json.dumps(DEFAULT_COLLABORATION)),
     },
 }
 
@@ -128,6 +130,9 @@ def _normalize_data(data: dict[str, Any] | None) -> dict[str, Any]:
     normalized["settings"].setdefault("card_types", DEFAULT_DATA["settings"]["card_types"])
     normalized["settings"].setdefault("board_statuses", DEFAULT_DATA["settings"]["board_statuses"])
     normalized["settings"].setdefault("organizations", DEFAULT_DATA["settings"]["organizations"])
+    normalized["settings"]["collaboration"] = normalize_collaboration(
+        normalized["settings"].get("collaboration")
+    )
     fonts = normalized["settings"].get("editable_fonts")
     if not isinstance(fonts, dict):
         fonts = {}
@@ -235,6 +240,10 @@ class RedisStorage:
     @property
     def _settings_editable_font_key(self) -> str:
         return f"{self.settings_key}:editable_font"
+
+    @property
+    def _settings_collaboration_key(self) -> str:
+        return f"{self.settings_key}:collaboration"
 
     def read(self) -> dict[str, Any]:
         legacy_state = self._read_legacy_state()
@@ -724,6 +733,7 @@ class RedisStorage:
                 "board_statuses": board_statuses or DEFAULT_DATA["settings"]["board_statuses"],
                 "organizations": organizations or [],
                 "editable_fonts": self._read_editable_fonts(),
+                "collaboration": self._read_collaboration(),
             }
 
         legacy_settings = self._read_legacy_settings_string()
@@ -740,6 +750,7 @@ class RedisStorage:
                 self._settings_organizations_key,
                 self._settings_editable_fonts_key,
                 self._settings_editable_font_key,
+                self._settings_collaboration_key,
             )
         )
 
@@ -864,6 +875,29 @@ class RedisStorage:
             settings.get("organizations", DEFAULT_DATA["settings"]["organizations"]),
         )
         self._write_editable_fonts_hash(pipeline, settings.get("editable_fonts"))
+        self._write_collaboration_hash(pipeline, settings.get("collaboration"))
+
+    def _read_collaboration(self) -> dict[str, Any]:
+        key = self._settings_collaboration_key
+        key_type = self._key_type(key)
+        if key_type == "hash":
+            raw = self.client.hget(key, "config")
+            if raw:
+                try:
+                    payload = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    payload = None
+                if isinstance(payload, dict):
+                    return normalize_collaboration(payload)
+        return normalize_collaboration(DEFAULT_COLLABORATION)
+
+    def _write_collaboration_hash(self, pipeline: Any, collaboration: dict[str, Any] | None) -> None:
+        normalized = normalize_collaboration(collaboration)
+        pipeline.hset(
+            self._settings_collaboration_key,
+            "config",
+            json.dumps(normalized, ensure_ascii=False),
+        )
 
     def _write_settings_collection(self, pipeline: Any, key: str, items: list[dict[str, Any]]) -> None:
         mapping: dict[str, str] = {}
