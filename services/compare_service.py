@@ -216,6 +216,70 @@ def _queue_board_pairs_for_account(
     return queued
 
 
+def _queue_boards_for_unmatched_account(
+    *,
+    account_status: str,
+    boards: list[dict[str, Any]],
+    match_mode: str,
+) -> list[dict[str, Any]]:
+    queued: list[dict[str, Any]] = []
+    for board in boards:
+        board_id = str(board.get("id"))
+        if account_status == "only_remote":
+            queued.append(
+                {
+                    "match_mode": match_mode,
+                    "local_board_id": None,
+                    "remote_board_id": board_id,
+                    "status": "only_remote",
+                    "remote_title": board.get("title") or "",
+                    "remote_organization": board.get("organization") or "",
+                }
+            )
+        elif account_status == "only_local":
+            queued.append(
+                {
+                    "match_mode": match_mode,
+                    "local_board_id": board_id,
+                    "remote_board_id": None,
+                    "status": "only_local",
+                    "local_title": board.get("title") or "",
+                    "local_organization": board.get("organization") or "",
+                }
+            )
+    return queued
+
+
+def _build_account_remote_map(account_pairs: list[dict[str, Any]]) -> dict[str, Any]:
+    account_remote_map: dict[str, Any] = {}
+    for pair in account_pairs:
+        status = pair.get("status") or "matched"
+        if status == "matched" and pair.get("local") and pair.get("remote"):
+            account_remote_map[
+                _account_map_key(
+                    str(pair["local"].get("tenant_type") or ""),
+                    str(pair["local"].get("tenant_id") or ""),
+                )
+            ] = pair["remote"]
+        elif status == "only_remote" and pair.get("remote"):
+            remote = pair["remote"]
+            account_remote_map[
+                _account_map_key(
+                    str(remote.get("tenant_type") or ""),
+                    str(remote.get("tenant_id") or ""),
+                )
+            ] = remote
+        elif status == "only_local" and pair.get("local"):
+            local = pair["local"]
+            account_remote_map[
+                _account_map_key(
+                    str(local.get("tenant_type") or ""),
+                    str(local.get("tenant_id") or ""),
+                )
+            ] = local
+    return account_remote_map
+
+
 class CompareService:
     def __init__(self, config: dict[str, Any], storage) -> None:
         self.config = config
@@ -612,6 +676,10 @@ class CompareService:
             if str(queued.get("tenant_type") or "") == tenant_type and str(queued.get("tenant_id") or "") == tenant_id
         ]
         if not board_indices:
+            if account_status == "only_remote" and normalized_direction == "to_local":
+                raise ValueError("该远程账号下暂无看板，无法同步")
+            if account_status == "only_local" and normalized_direction == "to_remote":
+                raise ValueError("该本地账号下暂无看板，无法同步")
             raise ValueError("该账号下没有可同步的看板")
 
         synced: list[dict[str, Any]] = []
@@ -667,6 +735,193 @@ class CompareService:
             "synced_count": len(synced),
             "error_count": len(errors),
             "synced": synced,
+            "errors": errors,
+            "board_pairs": copy.deepcopy(progress.get("queued_board_pairs") or []),
+            "board_results": copy.deepcopy(progress.get("board_results") or []),
+            "account_pair": copy.deepcopy(account_pairs[account_pair_index]),
+        }
+
+    def _remove_queued_board_pair(self, session: dict[str, Any], pair_index: int) -> None:
+        progress = session.get("progress") or {}
+        queued_pairs = list(progress.get("queued_board_pairs") or [])
+        board_results = list(progress.get("board_results") or [])
+        if pair_index < 0 or pair_index >= len(queued_pairs):
+            raise ValueError("看板对不存在")
+        queued_pairs.pop(pair_index)
+        board_results = [item for item in board_results if int(item.get("pair_index", -1)) != pair_index]
+        for item in board_results:
+            current_index = int(item.get("pair_index", -1))
+            if current_index > pair_index:
+                item["pair_index"] = current_index - 1
+        self._update_session_progress(
+            session,
+            queued_board_pairs=queued_pairs,
+            board_results=board_results,
+        )
+
+    def delete_board_pair(
+        self,
+        session_id: str,
+        *,
+        pair_index: int,
+        side: str,
+    ) -> dict[str, Any]:
+        normalized_side = (side or "").strip().lower()
+        if normalized_side not in ("local", "remote"):
+            raise ValueError("side 必须是 local 或 remote")
+
+        session = self._get_session_or_raise(session_id)
+        client = CompareRemoteClient(self.config, session["remote_base_url"], session["remote_token"])
+        progress = session.get("progress") or {}
+        queued_pairs = progress.get("queued_board_pairs") or []
+        if pair_index < 0 or pair_index >= len(queued_pairs):
+            raise ValueError("看板对不存在")
+
+        queued = queued_pairs[pair_index]
+        pair_status = queued.get("status") or "matched"
+        if normalized_side == "local" and pair_status == "only_remote":
+            raise ValueError("该看板仅存在于远程，无法删除本地副本")
+        if normalized_side == "remote" and pair_status == "only_local":
+            raise ValueError("该看板仅存在于本地，无法删除远程副本")
+        if pair_status == "matched":
+            raise ValueError("已匹配的看板请使用同步覆盖，不支持单独删除一侧")
+
+        account_remote_map = progress.get("account_remote_map") or {}
+        remote_account = _lookup_remote_account(
+            account_remote_map,
+            str(queued.get("tenant_type") or ""),
+            str(queued.get("tenant_id") or ""),
+        ) or {
+            "tenant_type": queued.get("tenant_type"),
+            "tenant_id": queued.get("tenant_id"),
+        }
+        local_tenant_type = str(queued.get("tenant_type") or "")
+        local_tenant_id = str(queued.get("tenant_id") or "")
+        remote_tenant_type = str(remote_account.get("tenant_type") or local_tenant_type)
+        remote_tenant_id = str(remote_account.get("tenant_id") or local_tenant_id)
+        title = queued.get("local_title") or queued.get("remote_title") or "看板"
+
+        from services.compare_sync import delete_board_from_tenant
+
+        try:
+            if normalized_side == "local":
+                board_id = str(queued.get("local_board_id") or "").strip()
+                if not board_id:
+                    raise ValueError("缺少本地看板 ID")
+                delete_board_from_tenant(self.storage, local_tenant_type, local_tenant_id, board_id)
+            else:
+                board_id = str(queued.get("remote_board_id") or "").strip()
+                if not board_id:
+                    raise ValueError("缺少远程看板 ID")
+                client.delete_board(remote_tenant_type, remote_tenant_id, board_id)
+        except CompareRemoteError as error:
+            raise ValueError(_format_remote_sync_error(error)) from error
+
+        self._remove_queued_board_pair(session, pair_index)
+        side_label = "本地" if normalized_side == "local" else "远程"
+        progress = session.get("progress") or {}
+        return {
+            "message": f"已从{side_label}删除「{title}」",
+            "side": normalized_side,
+            "removed_pair_index": pair_index,
+            "board_pairs": copy.deepcopy(progress.get("queued_board_pairs") or []),
+            "board_results": copy.deepcopy(progress.get("board_results") or []),
+        }
+
+    def delete_account_boards(
+        self,
+        session_id: str,
+        *,
+        account_pair_index: int,
+        side: str,
+    ) -> dict[str, Any]:
+        normalized_side = (side or "").strip().lower()
+        if normalized_side not in ("local", "remote"):
+            raise ValueError("side 必须是 local 或 remote")
+
+        session = self._get_session_or_raise(session_id)
+        progress = session.get("progress") or {}
+        account_pairs = progress.get("account_pairs") or []
+        if account_pair_index < 0 or account_pair_index >= len(account_pairs):
+            raise ValueError("账号对不存在")
+
+        account_pair = account_pairs[account_pair_index]
+        account_status = account_pair.get("status") or "matched"
+        if normalized_side == "local" and account_status == "only_remote":
+            raise ValueError("该账号仅存在于远程，无法删除本地副本")
+        if normalized_side == "remote" and account_status == "only_local":
+            raise ValueError("该账号仅存在于本地，无法删除远程副本")
+        if account_status == "matched":
+            raise ValueError("已匹配的账号不支持批量删除，请逐条删除仅本地/仅远程看板")
+
+        local_account = account_pair.get("local") or {}
+        remote_account = account_pair.get("remote") or {}
+        if normalized_side == "local":
+            tenant_type = str(local_account.get("tenant_type") or "")
+            tenant_id = str(local_account.get("tenant_id") or "")
+            target_status = "only_local"
+        else:
+            tenant_type = str(remote_account.get("tenant_type") or local_account.get("tenant_type") or "")
+            tenant_id = str(remote_account.get("tenant_id") or local_account.get("tenant_id") or "")
+            target_status = "only_remote"
+
+        if not tenant_type or not tenant_id:
+            raise ValueError("账号信息不完整")
+
+        queued_pairs = progress.get("queued_board_pairs") or []
+        board_indices = [
+            index
+            for index, queued in enumerate(queued_pairs)
+            if str(queued.get("tenant_type") or "") == tenant_type
+            and str(queued.get("tenant_id") or "") == tenant_id
+            and (queued.get("status") or "matched") == target_status
+        ]
+        if not board_indices:
+            side_label = "本地" if normalized_side == "local" else "远程"
+            raise ValueError(f"该{side_label}账号下没有可删除的看板")
+
+        deleted: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for pair_index in sorted(board_indices, reverse=True):
+            queued = queued_pairs[pair_index]
+            try:
+                result = self.delete_board_pair(session_id, pair_index=pair_index, side=normalized_side)
+                deleted.append(
+                    {
+                        "pair_index": pair_index,
+                        "title": queued.get("local_title") or queued.get("remote_title"),
+                        "message": result.get("message"),
+                    }
+                )
+                session = self._get_session_or_raise(session_id)
+                progress = session.get("progress") or {}
+                queued_pairs = progress.get("queued_board_pairs") or []
+            except ValueError as error:
+                errors.append(
+                    {
+                        "pair_index": pair_index,
+                        "title": queued.get("local_title") or queued.get("remote_title"),
+                        "message": str(error),
+                    }
+                )
+
+        progress = session.get("progress") or {}
+        if not deleted:
+            message = errors[0]["message"] if errors else "没有看板被删除"
+            raise ValueError(message)
+
+        side_label = "本地" if normalized_side == "local" else "远程"
+        summary = f"已从{side_label}删除 {len(deleted)} 个看板"
+        if errors:
+            summary += f"，{len(errors)} 个失败"
+
+        return {
+            "message": summary,
+            "side": normalized_side,
+            "account_pair_index": account_pair_index,
+            "deleted_count": len(deleted),
+            "error_count": len(errors),
+            "deleted": deleted,
             "errors": errors,
             "board_pairs": copy.deepcopy(progress.get("queued_board_pairs") or []),
             "board_results": copy.deepcopy(progress.get("board_results") or []),
@@ -1042,101 +1297,186 @@ class CompareService:
             session["phase"] = "accounts"
 
             matched_accounts = [pair for pair in account_pairs if pair.get("status") == "matched"]
-            total_accounts = max(len(matched_accounts), 1)
+            total_accounts = max(len(account_pairs), 1)
             queued_board_pairs = []
-            account_remote_map = {
-                _account_map_key(
-                    str(pair["local"].get("tenant_type") or ""),
-                    str(pair["local"].get("tenant_id") or ""),
-                ): pair["remote"]
-                for pair in matched_accounts
-                if pair.get("local") and pair.get("remote")
-            }
+            account_remote_map = _build_account_remote_map(account_pairs)
 
-            for index, pair in enumerate(matched_accounts):
-                local_account = pair["local"]
-                remote_account = pair["remote"]
-                tenant_type = str(local_account.get("tenant_type") or "")
-                tenant_id = str(local_account.get("tenant_id") or "")
-                display_name = local_account.get("display_name") or tenant_id
+            for index, pair in enumerate(account_pairs):
+                account_status = pair.get("status") or "matched"
                 account_percent = 20 + int((index / total_accounts) * 30)
 
-                local_boards: list[dict[str, Any]] = []
-                cursor = None
-                while True:
-                    page = paginate_federation_boards(
-                        self.storage,
-                        tenant_type,
-                        tenant_id,
-                        cursor=cursor,
-                        limit=self.boards_page_size,
-                    )
-                    batch = page.get("items") or []
-                    local_boards.extend(batch)
-                    yield {
-                        "step": "boards_local",
-                        "tenant_type": tenant_type,
-                        "tenant_id": tenant_id,
-                        "display_name": display_name,
-                        "items": batch,
-                        "cursor": page.get("next_cursor"),
-                        "done": bool(page.get("done")),
-                        "percent": account_percent,
-                    }
-                    if page.get("done"):
-                        break
-                    cursor = page.get("next_cursor")
-                    if not cursor:
-                        break
+                if account_status == "matched":
+                    local_account = pair["local"]
+                    remote_account = pair["remote"]
+                    tenant_type = str(local_account.get("tenant_type") or "")
+                    tenant_id = str(local_account.get("tenant_id") or "")
+                    display_name = local_account.get("display_name") or tenant_id
 
-                remote_boards: list[dict[str, Any]] = []
-                cursor = None
-                while True:
-                    try:
-                        page = client.list_boards_page(
-                            str(remote_account.get("tenant_type") or ""),
-                            str(remote_account.get("tenant_id") or ""),
+                    local_boards: list[dict[str, Any]] = []
+                    cursor = None
+                    while True:
+                        page = paginate_federation_boards(
+                            self.storage,
+                            tenant_type,
+                            tenant_id,
                             cursor=cursor,
                             limit=self.boards_page_size,
                         )
-                    except CompareRemoteError as error:
+                        batch = page.get("items") or []
+                        local_boards.extend(batch)
                         yield {
-                            "step": "error",
-                            "message": str(error),
-                            "fatal": False,
+                            "step": "boards_local",
                             "tenant_type": tenant_type,
                             "tenant_id": tenant_id,
+                            "display_name": display_name,
+                            "items": batch,
+                            "cursor": page.get("next_cursor"),
+                            "done": bool(page.get("done")),
                             "percent": account_percent,
-                            "done": False,
-                            "error": True,
                         }
-                        break
-                    batch = page.get("items") or []
-                    remote_boards.extend(batch)
-                    yield {
-                        "step": "boards_remote",
-                        "tenant_type": tenant_type,
-                        "tenant_id": tenant_id,
-                        "display_name": display_name,
-                        "items": batch,
-                        "cursor": page.get("next_cursor"),
-                        "done": bool(page.get("done")),
-                        "percent": account_percent + 2,
-                    }
-                    if page.get("done"):
-                        break
-                    cursor = page.get("next_cursor")
-                    if not cursor:
-                        break
+                        if page.get("done"):
+                            break
+                        cursor = page.get("next_cursor")
+                        if not cursor:
+                            break
 
-                account_queue = _queue_board_pairs_for_account(
-                    match_mode=match_mode,
-                    manual_pairs=manual_pairs,
-                    local_boards=local_boards,
-                    remote_boards=remote_boards,
-                    tenant_type=tenant_type,
-                    tenant_id=tenant_id,
-                )
+                    remote_boards: list[dict[str, Any]] = []
+                    cursor = None
+                    while True:
+                        try:
+                            page = client.list_boards_page(
+                                str(remote_account.get("tenant_type") or ""),
+                                str(remote_account.get("tenant_id") or ""),
+                                cursor=cursor,
+                                limit=self.boards_page_size,
+                            )
+                        except CompareRemoteError as error:
+                            yield {
+                                "step": "error",
+                                "message": str(error),
+                                "fatal": False,
+                                "tenant_type": tenant_type,
+                                "tenant_id": tenant_id,
+                                "percent": account_percent,
+                                "done": False,
+                                "error": True,
+                            }
+                            break
+                        batch = page.get("items") or []
+                        remote_boards.extend(batch)
+                        yield {
+                            "step": "boards_remote",
+                            "tenant_type": tenant_type,
+                            "tenant_id": tenant_id,
+                            "display_name": display_name,
+                            "items": batch,
+                            "cursor": page.get("next_cursor"),
+                            "done": bool(page.get("done")),
+                            "percent": account_percent + 2,
+                        }
+                        if page.get("done"):
+                            break
+                        cursor = page.get("next_cursor")
+                        if not cursor:
+                            break
+
+                    account_queue = _queue_board_pairs_for_account(
+                        match_mode=match_mode,
+                        manual_pairs=manual_pairs,
+                        local_boards=local_boards,
+                        remote_boards=remote_boards,
+                        tenant_type=tenant_type,
+                        tenant_id=tenant_id,
+                    )
+                elif account_status == "only_remote":
+                    remote_account = pair.get("remote") or {}
+                    tenant_type = str(remote_account.get("tenant_type") or "")
+                    tenant_id = str(remote_account.get("tenant_id") or "")
+                    display_name = remote_account.get("display_name") or tenant_id
+                    remote_boards: list[dict[str, Any]] = []
+                    cursor = None
+                    while True:
+                        try:
+                            page = client.list_boards_page(
+                                tenant_type,
+                                tenant_id,
+                                cursor=cursor,
+                                limit=self.boards_page_size,
+                            )
+                        except CompareRemoteError as error:
+                            yield {
+                                "step": "error",
+                                "message": str(error),
+                                "fatal": False,
+                                "tenant_type": tenant_type,
+                                "tenant_id": tenant_id,
+                                "percent": account_percent,
+                                "done": False,
+                                "error": True,
+                            }
+                            break
+                        batch = page.get("items") or []
+                        remote_boards.extend(batch)
+                        yield {
+                            "step": "boards_remote",
+                            "tenant_type": tenant_type,
+                            "tenant_id": tenant_id,
+                            "display_name": display_name,
+                            "items": batch,
+                            "cursor": page.get("next_cursor"),
+                            "done": bool(page.get("done")),
+                            "percent": account_percent + 2,
+                        }
+                        if page.get("done"):
+                            break
+                        cursor = page.get("next_cursor")
+                        if not cursor:
+                            break
+                    account_queue = _queue_boards_for_unmatched_account(
+                        account_status=account_status,
+                        boards=remote_boards,
+                        match_mode=match_mode,
+                    )
+                elif account_status == "only_local":
+                    local_account = pair.get("local") or {}
+                    tenant_type = str(local_account.get("tenant_type") or "")
+                    tenant_id = str(local_account.get("tenant_id") or "")
+                    display_name = local_account.get("display_name") or tenant_id
+                    local_boards: list[dict[str, Any]] = []
+                    cursor = None
+                    while True:
+                        page = paginate_federation_boards(
+                            self.storage,
+                            tenant_type,
+                            tenant_id,
+                            cursor=cursor,
+                            limit=self.boards_page_size,
+                        )
+                        batch = page.get("items") or []
+                        local_boards.extend(batch)
+                        yield {
+                            "step": "boards_local",
+                            "tenant_type": tenant_type,
+                            "tenant_id": tenant_id,
+                            "display_name": display_name,
+                            "items": batch,
+                            "cursor": page.get("next_cursor"),
+                            "done": bool(page.get("done")),
+                            "percent": account_percent,
+                        }
+                        if page.get("done"):
+                            break
+                        cursor = page.get("next_cursor")
+                        if not cursor:
+                            break
+                    account_queue = _queue_boards_for_unmatched_account(
+                        account_status=account_status,
+                        boards=local_boards,
+                        match_mode=match_mode,
+                    )
+                else:
+                    continue
+
                 for queued in account_queue:
                     queued["tenant_type"] = tenant_type
                     queued["tenant_id"] = tenant_id

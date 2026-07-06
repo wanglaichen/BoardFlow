@@ -299,15 +299,42 @@ def run_tests(client: ApiClient, mode_label: str) -> int:
 
     print("\n--- 账号 sync-account ---")
     matched_accounts = [p for p in account_pairs if (p.get("status") or "matched") == "matched"]
-    if not matched_accounts:
-        print("  [SKIP] 无 matched 账号对")
-    else:
+    only_remote_accounts = [
+        (index, pair) for index, pair in enumerate(account_pairs) if (pair.get("status") or "") == "only_remote"
+    ]
+    if matched_accounts:
         passed, detail = sync_account(0, "to_remote")
         if passed:
-            ok("账号批量 → 远程", detail)
+            ok("matched 账号批量 → 远程", detail)
         else:
-            fail("账号批量 → 远程", detail)
+            fail("matched 账号批量 → 远程", detail)
             failures += 1
+    else:
+        print("  [SKIP] 无 matched 账号对")
+
+    if only_remote_accounts:
+        account_pair_index = only_remote_accounts[0][0]
+        remote = only_remote_accounts[0][1].get("remote") or {}
+        tt, ti = str(remote.get("tenant_type") or ""), str(remote.get("tenant_id") or "")
+        syncable = sum(
+            1
+            for item in board_results
+            if item.get("pair_status") == "only_remote"
+            and str(item.get("tenant_type") or "") == tt
+            and str(item.get("tenant_id") or "") == ti
+            and item.get("remote_board_id")
+        )
+        if syncable <= 0:
+            print("  [SKIP] only_remote 账号无看板")
+        else:
+            passed, detail = sync_account(account_pair_index, "to_local")
+            if passed:
+                ok("only_remote 账号批量 ← 远程", detail)
+            else:
+                fail("only_remote 账号批量 ← 远程", detail)
+                failures += 1
+    else:
+        print("  [SKIP] 无 only_remote 账号对")
 
     print("\n=== 结果 ===")
     if failures:

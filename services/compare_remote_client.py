@@ -211,6 +211,12 @@ class CompareRemoteClient:
                 raise
             return self._request_json(fallback_path, method="POST", body=body)
 
+    def delete_board(self, tenant_type: str, tenant_id: str, board_id: str) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/federation/accounts/{tenant_type}/{tenant_id}/boards/{board_id}",
+            method="DELETE",
+        )
+
     def load_board_compare_snapshot(
         self,
         tenant_type: str,

@@ -232,3 +232,31 @@ def apply_board_sync_payload(
         "tenant_type": tenant_type,
         "tenant_id": tenant_id,
     }
+
+
+def delete_board_from_tenant(
+    storage,
+    tenant_type: str,
+    tenant_id: str,
+    board_id: str,
+) -> dict[str, Any]:
+    settings = storage.read_settings()
+    tenant_ctx = build_tenant_context_for_federation(tenant_type, tenant_id)
+    tenant_data = storage.read_tenant(tenant_ctx, settings)
+    _find_board_or_raise(tenant_data, board_id)
+    normalized_board_id = str(board_id)
+    tenant_data["boards"] = [
+        item for item in tenant_data.get("boards") or [] if str(item.get("id")) != normalized_board_id
+    ]
+    tenant_data["lists"] = [
+        item for item in tenant_data.get("lists") or [] if str(item.get("board_id")) != normalized_board_id
+    ]
+    tenant_data["cards"] = [
+        item for item in tenant_data.get("cards") or [] if str(item.get("board_id")) != normalized_board_id
+    ]
+    storage.write_tenant(tenant_ctx, tenant_data, settings)
+    return {
+        "board_id": normalized_board_id,
+        "tenant_type": tenant_type,
+        "tenant_id": tenant_id,
+    }

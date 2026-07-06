@@ -92,6 +92,20 @@ def init_federation(storage):
             return jsonify({"message": str(error)}), 400
         return jsonify(result)
 
+    @bp.route("/accounts/<tenant_type>/<tenant_id>/boards/<board_id>", methods=["DELETE"])
+    def federation_board_delete(tenant_type: str, tenant_id: str, board_id: str):
+        try:
+            build_tenant_context_for_federation(tenant_type, tenant_id)
+        except ValueError as error:
+            return jsonify({"message": str(error)}), 400
+        from services.compare_sync import delete_board_from_tenant
+
+        try:
+            result = delete_board_from_tenant(storage, tenant_type, tenant_id, board_id)
+        except ValueError as error:
+            return jsonify({"message": str(error)}), 404
+        return jsonify(result)
+
     @bp.route("/accounts/<tenant_type>/<tenant_id>/boards/<board_id>/meta", methods=["GET"])
     def federation_board_meta(tenant_type: str, tenant_id: str, board_id: str):
         try:

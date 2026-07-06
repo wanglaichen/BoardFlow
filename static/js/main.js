@@ -2753,14 +2753,19 @@ function compareBoardSideLabel(pair, side) {
     return { title, org, id: pair.remote_board_id || "" };
 }
 
-function renderCompareBoardCell(sideInfo, side) {
+function renderCompareBoardCell(sideInfo, side, deleteOptions = null) {
     if (!sideInfo) {
         return `<div class="compare-cell compare-cell--empty compare-cell--${side}"><span class="compare-cell-empty-mark">—</span></div>`;
     }
+    const deleteButton =
+        deleteOptions && compareUiState.sessionId
+            ? `<button class="compare-delete-btn" type="button" title="${escapeHtml(deleteOptions.title)}" data-delete-scope="board" data-delete-side="${side}" data-pair-index="${deleteOptions.pairIndex}" aria-label="${escapeHtml(deleteOptions.title)}">删除</button>`
+            : "";
     return `
         <div class="compare-cell compare-cell--${side}">
             <div class="compare-cell-title">${escapeHtml(sideInfo.title)}</div>
             <div class="compare-cell-meta">${escapeHtml(sideInfo.org)}${sideInfo.id ? ` · ID ${escapeHtml(sideInfo.id)}` : ""}</div>
+            ${deleteButton ? `<div class="compare-cell-actions">${deleteButton}</div>` : ""}
         </div>
     `;
 }
@@ -2789,18 +2794,70 @@ function compareRowMatchesFilter(status, pairStatus) {
     return true;
 }
 
+function countAccountDeletableBoards(accountPair, side) {
+    const status = accountPair.status || "matched";
+    if (side === "local") {
+        if (status !== "only_local") {
+            return 0;
+        }
+        const account = accountPair.local;
+        if (!account) {
+            return 0;
+        }
+        const tenantType = account.tenant_type || "";
+        const tenantId = account.tenant_id || "";
+        return compareUiState.boardPairs.filter(
+            (pair) =>
+                pair.tenant_type === tenantType &&
+                pair.tenant_id === tenantId &&
+                (pair.status || "matched") === "only_local" &&
+                pair.local_board_id,
+        ).length;
+    }
+    if (status !== "only_remote") {
+        return 0;
+    }
+    const account = accountPair.remote;
+    if (!account) {
+        return 0;
+    }
+    const tenantType = account.tenant_type || "";
+    const tenantId = account.tenant_id || "";
+    return compareUiState.boardPairs.filter(
+        (pair) =>
+            pair.tenant_type === tenantType &&
+            pair.tenant_id === tenantId &&
+            (pair.status || "matched") === "only_remote" &&
+            pair.remote_board_id,
+    ).length;
+}
+
+function renderCompareAccountDeleteAction(accountPairIndex, pair, side) {
+    if (!compareUiState.sessionId) {
+        return "";
+    }
+    const count = countAccountDeletableBoards(pair, side);
+    if (count <= 0) {
+        return "";
+    }
+    const sideLabel = side === "local" ? "本地" : "远程";
+    return `<button class="compare-delete-btn" type="button" title="删除${sideLabel}侧全部 ${count} 个看板" data-delete-scope="account" data-delete-side="${side}" data-account-pair-index="${accountPairIndex}" aria-label="删除${sideLabel}侧全部看板">删除</button>`;
+}
+
 function renderCompareAccountPairRow(pair, accountPairIndex) {
     const status = pair.status || "matched";
     const localName = pair.local?.display_name || pair.local?.tenant_id || "—";
     const remoteName = pair.remote?.display_name || pair.remote?.tenant_id || "—";
+    const localDelete = renderCompareAccountDeleteAction(accountPairIndex, pair, "local");
+    const remoteDelete = renderCompareAccountDeleteAction(accountPairIndex, pair, "remote");
     const localCell =
         status === "only_remote"
             ? `<div class="compare-cell compare-cell--empty compare-cell--local"><span class="compare-cell-empty-mark">—</span></div>`
-            : `<div class="compare-cell compare-cell--local"><div class="compare-cell-title">${escapeHtml(localName)}</div><div class="compare-cell-meta">账号</div></div>`;
+            : `<div class="compare-cell compare-cell--local"><div class="compare-cell-title">${escapeHtml(localName)}</div><div class="compare-cell-meta">账号</div>${localDelete ? `<div class="compare-cell-actions">${localDelete}</div>` : ""}</div>`;
     const remoteCell =
         status === "only_local"
             ? `<div class="compare-cell compare-cell--empty compare-cell--remote"><span class="compare-cell-empty-mark">—</span></div>`
-            : `<div class="compare-cell compare-cell--remote"><div class="compare-cell-title">${escapeHtml(remoteName)}</div><div class="compare-cell-meta">账号</div></div>`;
+            : `<div class="compare-cell compare-cell--remote"><div class="compare-cell-title">${escapeHtml(remoteName)}</div><div class="compare-cell-meta">账号</div>${remoteDelete ? `<div class="compare-cell-actions">${remoteDelete}</div>` : ""}</div>`;
     return `
         <div class="compare-diff-row compare-diff-row--account compare-diff-row--${escapeHtml(status)}">
             ${localCell}
@@ -2813,13 +2870,41 @@ function renderCompareAccountPairRow(pair, accountPairIndex) {
     `;
 }
 
+function countAccountSyncableBoards(accountPair, direction) {
+    const status = accountPair.status || "matched";
+    if (direction === "to_remote" && status === "only_remote") {
+        return 0;
+    }
+    if (direction === "to_local" && status === "only_local") {
+        return 0;
+    }
+    const account = direction === "to_remote" ? accountPair.local : accountPair.remote;
+    if (!account) {
+        return 0;
+    }
+    const tenantType = account.tenant_type || "";
+    const tenantId = account.tenant_id || "";
+    return compareUiState.boardPairs.filter((pair) => {
+        if (pair.tenant_type !== tenantType || pair.tenant_id !== tenantId) {
+            return false;
+        }
+        const pairStatus = pair.status || "matched";
+        if (direction === "to_remote") {
+            return pairStatus !== "only_remote" && Boolean(pair.local_board_id);
+        }
+        return pairStatus !== "only_local" && Boolean(pair.remote_board_id);
+    }).length;
+}
+
 function renderCompareAccountSyncActions(accountPairIndex, pair) {
     if (!compareUiState.sessionId) {
         return "";
     }
     const status = pair.status || "matched";
-    const canToRemote = status !== "only_remote" && Boolean(pair.local);
-    const canToLocal = status !== "only_local" && Boolean(pair.remote);
+    const canToRemote =
+        status !== "only_remote" && Boolean(pair.local) && countAccountSyncableBoards(pair, "to_remote") > 0;
+    const canToLocal =
+        status !== "only_local" && Boolean(pair.remote) && countAccountSyncableBoards(pair, "to_local") > 0;
     if (!canToRemote && !canToLocal) {
         return "";
     }
@@ -2860,15 +2945,23 @@ function renderCompareBoardPairRow(pair, pairIndex, result) {
     const isExpanded = Number(compareUiState.expandedPairIndex) === Number(pairIndex);
     const statusKey = status === "pending" ? pairStatus : status;
     const badgeLabel = status === "pending" ? "对比中…" : compareStatusLabel(status);
+    const localDelete =
+        pairStatus === "only_local"
+            ? { pairIndex, title: "删除本地侧看板" }
+            : null;
+    const remoteDelete =
+        pairStatus === "only_remote"
+            ? { pairIndex, title: "删除远程侧看板" }
+            : null;
     return `
         <div class="compare-diff-row compare-diff-row--board compare-diff-row--${escapeHtml(statusKey)} ${isExpanded ? "is-expanded" : ""}" data-pair-index="${pairIndex}">
-            ${renderCompareBoardCell(localInfo, "local")}
+            ${renderCompareBoardCell(localInfo, "local", localDelete)}
             <div class="compare-cell compare-cell--status">
                 ${renderCompareSyncActions(pairIndex, pair, status)}
                 <span class="compare-result-badge compare-result-badge--${escapeHtml(statusKey === "pending" ? "changed" : statusKey)}">${escapeHtml(badgeLabel)}</span>
                 <button class="btn btn-sm btn-link compare-row-detail-btn" type="button" data-pair-index="${pairIndex}" ${status === "pending" ? "disabled" : ""}>${isExpanded ? "收起" : "详情"}</button>
             </div>
-            ${renderCompareBoardCell(remoteInfo, "remote")}
+            ${renderCompareBoardCell(remoteInfo, "remote", remoteDelete)}
         </div>
         ${
             isExpanded
@@ -2884,6 +2977,7 @@ function renderCompareWorkspace() {
     if (!workspace || !body) {
         return;
     }
+    const scrollY = window.scrollY;
     const hasRows = compareUiState.accountPairs.length || compareUiState.boardPairs.length;
     if (!hasRows) {
         workspace.hidden = true;
@@ -2918,6 +3012,7 @@ function renderCompareWorkspace() {
 
     body.innerHTML = sections.filter(Boolean).join("") || '<p class="compare-detail-empty">当前筛选下无结果</p>';
     bindCompareWorkspaceRows();
+    window.scrollTo(0, scrollY);
 }
 
 function bindCompareWorkspaceRows() {
@@ -2958,6 +3053,24 @@ function bindCompareWorkspaceRows() {
             }
             const pairIndex = Number(button.dataset.pairIndex);
             await syncComparePair(pairIndex, direction, button);
+        });
+    });
+
+    document.querySelectorAll(".compare-delete-btn").forEach((button) => {
+        button.addEventListener("click", async (event) => {
+            event.stopPropagation();
+            if (button.disabled) {
+                return;
+            }
+            const scope = button.dataset.deleteScope || "board";
+            const side = button.dataset.deleteSide;
+            if (scope === "account") {
+                const accountPairIndex = Number(button.dataset.accountPairIndex);
+                await deleteCompareAccountBoards(accountPairIndex, side, button);
+                return;
+            }
+            const pairIndex = Number(button.dataset.pairIndex);
+            await deleteCompareBoardPair(pairIndex, side, button);
         });
     });
 
@@ -3070,13 +3183,23 @@ function showCompareSyncFeedback(message, type = "info") {
         box.hidden = false;
         box.className = `compare-sync-feedback compare-sync-feedback--${type}`;
         box.textContent = message;
-        box.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
-    if (type === "success") {
-        showSuccess(message);
-    } else if (type === "error") {
-        showError(message);
-        errorBox?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function applyCompareBoardPairsPayload(payload, removedPairIndex = null) {
+    if (Array.isArray(payload.board_pairs)) {
+        compareUiState.boardPairs = payload.board_pairs;
+    }
+    if (Array.isArray(payload.board_results)) {
+        compareUiState.boardResults = payload.board_results;
+    }
+    if (removedPairIndex == null || compareUiState.expandedPairIndex == null) {
+        return;
+    }
+    if (Number(compareUiState.expandedPairIndex) === Number(removedPairIndex)) {
+        compareUiState.expandedPairIndex = null;
+    } else if (Number(compareUiState.expandedPairIndex) > Number(removedPairIndex)) {
+        compareUiState.expandedPairIndex = Number(compareUiState.expandedPairIndex) - 1;
     }
 }
 
@@ -3370,6 +3493,127 @@ async function syncCompareAccountPair(accountPairIndex, direction, triggerButton
         }
     } catch (error) {
         showCompareSyncFeedback(error.message || "账号同步失败", "error");
+        renderCompareWorkspace();
+    }
+}
+
+async function deleteCompareBoardPair(pairIndex, side, triggerButton) {
+    if (!compareUiState.sessionId) {
+        showCompareSyncFeedback("对比会话已失效，请先「探测远程连接」并重新「开始对比」。", "error");
+        return;
+    }
+    const pair = compareUiState.boardPairs[pairIndex];
+    if (!pair) {
+        showCompareSyncFeedback("看板对不存在，请重新运行对比。", "error");
+        return;
+    }
+    const sideLabel = side === "local" ? "本地" : "远程";
+    const boardLabel = side === "local" ? pair.local_title || pair.local_board_id : pair.remote_title || pair.remote_board_id;
+    const confirmed = window.confirm(`确定删除${sideLabel}侧看板「${boardLabel || "看板"}」？\n此操作不可撤销。`);
+    if (!confirmed) {
+        return;
+    }
+
+    clearCompareSyncFeedback();
+    showCompareSyncFeedback(`正在删除${sideLabel}侧「${boardLabel || "看板"}」…`, "info");
+
+    const buttons = document.querySelectorAll(
+        `.compare-delete-btn[data-delete-scope="board"][data-pair-index="${pairIndex}"]`,
+    );
+    buttons.forEach((node) => {
+        node.disabled = true;
+    });
+    if (triggerButton) {
+        triggerButton.textContent = "…";
+    }
+
+    try {
+        const response = await fetch(`/api/compare/sessions/${encodeURIComponent(compareUiState.sessionId)}/delete`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "same-origin",
+            body: JSON.stringify({
+                pair_index: pairIndex,
+                side,
+            }),
+        });
+        const payload = await parseCompareJsonResponse(response);
+        if (!response.ok) {
+            throw new Error(payload.message || "删除失败");
+        }
+        applyCompareBoardPairsPayload(payload, payload.removed_pair_index ?? pairIndex);
+        renderCompareWorkspace();
+        showCompareSyncFeedback(payload.message || "删除成功", "success");
+    } catch (error) {
+        showCompareSyncFeedback(error.message || "删除失败", "error");
+        renderCompareWorkspace();
+    }
+}
+
+async function deleteCompareAccountBoards(accountPairIndex, side, triggerButton) {
+    if (!compareUiState.sessionId) {
+        showCompareSyncFeedback("对比会话已失效，请先「探测远程连接」并重新「开始对比」。", "error");
+        return;
+    }
+    const pair = compareUiState.accountPairs[accountPairIndex];
+    if (!pair) {
+        showCompareSyncFeedback("账号对不存在，请重新运行对比。", "error");
+        return;
+    }
+    const sideLabel = side === "local" ? "本地" : "远程";
+    const accountName =
+        (side === "local" ? pair.local?.display_name : pair.remote?.display_name) ||
+        pair.local?.tenant_id ||
+        pair.remote?.tenant_id ||
+        "账号";
+    const count = countAccountDeletableBoards(pair, side);
+    const confirmed = window.confirm(
+        `确定删除${sideLabel}账号「${accountName}」下的 ${count} 个看板？\n此操作不可撤销。`,
+    );
+    if (!confirmed) {
+        return;
+    }
+
+    clearCompareSyncFeedback();
+    showCompareSyncFeedback(`正在删除${sideLabel}账号「${accountName}」下的看板…`, "info");
+
+    const buttons = document.querySelectorAll(
+        `.compare-delete-btn[data-delete-scope="account"][data-account-pair-index="${accountPairIndex}"][data-delete-side="${side}"]`,
+    );
+    buttons.forEach((node) => {
+        node.disabled = true;
+    });
+    if (triggerButton) {
+        triggerButton.textContent = "…";
+    }
+
+    try {
+        const response = await fetch(
+            `/api/compare/sessions/${encodeURIComponent(compareUiState.sessionId)}/delete-account`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "same-origin",
+                body: JSON.stringify({
+                    account_pair_index: accountPairIndex,
+                    side,
+                }),
+            },
+        );
+        const payload = await parseCompareJsonResponse(response);
+        if (!response.ok) {
+            throw new Error(payload.message || "账号删除失败");
+        }
+        applyCompareBoardPairsPayload(payload);
+        compareUiState.expandedPairIndex = null;
+        renderCompareWorkspace();
+        if (payload.error_count > 0) {
+            showCompareSyncFeedback(payload.message || "部分看板删除失败", "error");
+        } else {
+            showCompareSyncFeedback(payload.message || "删除成功", "success");
+        }
+    } catch (error) {
+        showCompareSyncFeedback(error.message || "账号删除失败", "error");
         renderCompareWorkspace();
     }
 }

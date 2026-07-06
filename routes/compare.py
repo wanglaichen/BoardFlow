@@ -137,4 +137,48 @@ def init_compare(compare_service, auth_service):
             return jsonify({"message": str(error)}), 400
         return jsonify(result)
 
+    @bp.route("/sessions/<session_id>/delete", methods=["POST"])
+    def delete_compare_board(session_id: str):
+        _require_super_admin()
+        payload = request.get_json(silent=True) or {}
+        pair_index_raw = payload.get("pair_index")
+        if pair_index_raw is None:
+            return jsonify({"message": "pair_index 不能为空"}), 400
+        try:
+            pair_index = int(pair_index_raw)
+        except (TypeError, ValueError):
+            return jsonify({"message": "pair_index 无效"}), 400
+        side = (payload.get("side") or "").strip()
+        try:
+            result = compare_service.delete_board_pair(
+                session_id,
+                pair_index=pair_index,
+                side=side,
+            )
+        except ValueError as error:
+            return jsonify({"message": str(error)}), 400
+        return jsonify(result)
+
+    @bp.route("/sessions/<session_id>/delete-account", methods=["POST"])
+    def delete_compare_account_boards(session_id: str):
+        _require_super_admin()
+        payload = request.get_json(silent=True) or {}
+        account_pair_index_raw = payload.get("account_pair_index")
+        if account_pair_index_raw is None:
+            return jsonify({"message": "account_pair_index 不能为空"}), 400
+        try:
+            account_pair_index = int(account_pair_index_raw)
+        except (TypeError, ValueError):
+            return jsonify({"message": "account_pair_index 无效"}), 400
+        side = (payload.get("side") or "").strip()
+        try:
+            result = compare_service.delete_account_boards(
+                session_id,
+                account_pair_index=account_pair_index,
+                side=side,
+            )
+        except ValueError as error:
+            return jsonify({"message": str(error)}), 400
+        return jsonify(result)
+
     return bp
