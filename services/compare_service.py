@@ -71,6 +71,16 @@ def _account_key(account: dict[str, Any]) -> tuple[str, str]:
     return (str(account.get("tenant_type") or ""), str(account.get("tenant_id") or ""))
 
 
+def _format_remote_sync_error(error: CompareRemoteError) -> str:
+    message = str(error)
+    if "404" in message or "405" in message:
+        return (
+            f"{message}。"
+            "远程实例需部署 v0.2.6+ 且设置 FEDERATION_COMPARE_ENABLED=1 才支持看板同步写入。"
+        )
+    return message
+
+
 def _match_accounts(local_accounts: list[dict[str, Any]], remote_accounts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     remote_map = {_account_key(item): item for item in remote_accounts}
     local_keys = set()
@@ -418,63 +428,66 @@ class CompareService:
         remote_tenant_id = str(remote_account.get("tenant_id") or local_tenant_id)
         sync_result: dict[str, Any]
 
-        if normalized_direction == "to_remote":
-            if pair_status == "only_remote":
-                raise ValueError("该看板仅存在于远程，无法同步到远程")
-            local_board_id = str(queued.get("local_board_id") or "").strip()
-            if not local_board_id:
-                raise ValueError("缺少本地看板 ID")
-            payload = load_board_full_sync_payload(self.storage, local_tenant_type, local_tenant_id, local_board_id)
-            if pair_status == "only_local":
-                target_board_id = None
-                effective_mode = "merge"
-            else:
-                target_board_id = str(queued.get("remote_board_id") or "").strip() or None
-                effective_mode = sync_mode if target_board_id else "merge"
-            sync_result = client.apply_board_sync(
-                remote_tenant_type,
-                remote_tenant_id,
-                payload,
-                target_board_id=target_board_id,
-                mode=effective_mode,
-            )
-            remote_board_id = str(sync_result.get("board_id") or "").strip()
-            if pair_status == "only_local" and remote_board_id:
-                queued["remote_board_id"] = remote_board_id
-                queued["remote_title"] = (payload.get("board") or {}).get("title") or queued.get("local_title")
-                queued["remote_organization"] = (payload.get("board") or {}).get("organization") or queued.get(
-                    "local_organization"
+        try:
+            if normalized_direction == "to_remote":
+                if pair_status == "only_remote":
+                    raise ValueError("该看板仅存在于远程，无法同步到远程")
+                local_board_id = str(queued.get("local_board_id") or "").strip()
+                if not local_board_id:
+                    raise ValueError("缺少本地看板 ID")
+                payload = load_board_full_sync_payload(self.storage, local_tenant_type, local_tenant_id, local_board_id)
+                if pair_status == "only_local":
+                    target_board_id = None
+                    effective_mode = "merge"
+                else:
+                    target_board_id = str(queued.get("remote_board_id") or "").strip() or None
+                    effective_mode = sync_mode if target_board_id else "merge"
+                sync_result = client.apply_board_sync(
+                    remote_tenant_type,
+                    remote_tenant_id,
+                    payload,
+                    target_board_id=target_board_id,
+                    mode=effective_mode,
                 )
-                queued["status"] = "matched"
-        else:
-            if pair_status == "only_local":
-                raise ValueError("该看板仅存在于本地，无法从远程同步")
-            remote_board_id = str(queued.get("remote_board_id") or "").strip()
-            if not remote_board_id:
-                raise ValueError("缺少远程看板 ID")
-            payload = client.load_board_full_sync_payload(remote_tenant_type, remote_tenant_id, remote_board_id)
-            if pair_status == "only_remote":
-                target_board_id = None
-                effective_mode = "merge"
+                remote_board_id = str(sync_result.get("board_id") or "").strip()
+                if pair_status == "only_local" and remote_board_id:
+                    queued["remote_board_id"] = remote_board_id
+                    queued["remote_title"] = (payload.get("board") or {}).get("title") or queued.get("local_title")
+                    queued["remote_organization"] = (payload.get("board") or {}).get("organization") or queued.get(
+                        "local_organization"
+                    )
+                    queued["status"] = "matched"
             else:
-                target_board_id = str(queued.get("local_board_id") or "").strip() or None
-                effective_mode = sync_mode if target_board_id else "merge"
-            sync_result = apply_board_sync_payload(
-                self.storage,
-                local_tenant_type,
-                local_tenant_id,
-                payload,
-                target_board_id=target_board_id,
-                mode=effective_mode,
-            )
-            local_board_id = str(sync_result.get("board_id") or "").strip()
-            if pair_status == "only_remote" and local_board_id:
-                queued["local_board_id"] = local_board_id
-                queued["local_title"] = (payload.get("board") or {}).get("title") or queued.get("remote_title")
-                queued["local_organization"] = (payload.get("board") or {}).get("organization") or queued.get(
-                    "remote_organization"
+                if pair_status == "only_local":
+                    raise ValueError("该看板仅存在于本地，无法从远程同步")
+                remote_board_id = str(queued.get("remote_board_id") or "").strip()
+                if not remote_board_id:
+                    raise ValueError("缺少远程看板 ID")
+                payload = client.load_board_full_sync_payload(remote_tenant_type, remote_tenant_id, remote_board_id)
+                if pair_status == "only_remote":
+                    target_board_id = None
+                    effective_mode = "merge"
+                else:
+                    target_board_id = str(queued.get("local_board_id") or "").strip() or None
+                    effective_mode = sync_mode if target_board_id else "merge"
+                sync_result = apply_board_sync_payload(
+                    self.storage,
+                    local_tenant_type,
+                    local_tenant_id,
+                    payload,
+                    target_board_id=target_board_id,
+                    mode=effective_mode,
                 )
-                queued["status"] = "matched"
+                local_board_id = str(sync_result.get("board_id") or "").strip()
+                if pair_status == "only_remote" and local_board_id:
+                    queued["local_board_id"] = local_board_id
+                    queued["local_title"] = (payload.get("board") or {}).get("title") or queued.get("remote_title")
+                    queued["local_organization"] = (payload.get("board") or {}).get("organization") or queued.get(
+                        "remote_organization"
+                    )
+                    queued["status"] = "matched"
+        except CompareRemoteError as error:
+            raise ValueError(_format_remote_sync_error(error)) from error
 
         new_result = self._compute_board_pair_diff(
             client=client,
@@ -508,6 +521,114 @@ class CompareService:
             "sync": sync_result,
             "result": new_result,
             "queued": copy.deepcopy(queued),
+        }
+
+    def sync_account_pair(
+        self,
+        session_id: str,
+        *,
+        account_pair_index: int,
+        direction: str,
+        mode: str = "replace",
+    ) -> dict[str, Any]:
+        normalized_direction = (direction or "").strip().lower()
+        if normalized_direction not in ("to_local", "to_remote"):
+            raise ValueError("direction 必须是 to_local 或 to_remote")
+        sync_mode = (mode or "replace").strip().lower()
+        if sync_mode not in ("replace", "merge"):
+            raise ValueError("mode 必须是 replace 或 merge")
+
+        session = self._get_session_or_raise(session_id)
+        progress = session.get("progress") or {}
+        account_pairs = progress.get("account_pairs") or []
+        if account_pair_index < 0 or account_pair_index >= len(account_pairs):
+            raise ValueError("账号对不存在")
+
+        account_pair = account_pairs[account_pair_index]
+        account_status = account_pair.get("status") or "matched"
+        if normalized_direction == "to_remote" and account_status == "only_remote":
+            raise ValueError("该账号仅存在于远程，无法同步到远程")
+        if normalized_direction == "to_local" and account_status == "only_local":
+            raise ValueError("该账号仅存在于本地，无法从远程同步")
+
+        local_account = account_pair.get("local") or {}
+        remote_account = account_pair.get("remote") or {}
+        if normalized_direction == "to_remote":
+            tenant_type = str(local_account.get("tenant_type") or "")
+            tenant_id = str(local_account.get("tenant_id") or "")
+        else:
+            tenant_type = str(remote_account.get("tenant_type") or local_account.get("tenant_type") or "")
+            tenant_id = str(remote_account.get("tenant_id") or local_account.get("tenant_id") or "")
+
+        if not tenant_type or not tenant_id:
+            raise ValueError("账号信息不完整")
+
+        queued_pairs = progress.get("queued_board_pairs") or []
+        board_indices = [
+            index
+            for index, queued in enumerate(queued_pairs)
+            if str(queued.get("tenant_type") or "") == tenant_type and str(queued.get("tenant_id") or "") == tenant_id
+        ]
+        if not board_indices:
+            raise ValueError("该账号下没有可同步的看板")
+
+        synced: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for pair_index in board_indices:
+            queued = queued_pairs[pair_index]
+            pair_status = queued.get("status") or "matched"
+            if normalized_direction == "to_remote":
+                if pair_status == "only_remote" or not queued.get("local_board_id"):
+                    continue
+            elif pair_status == "only_local" or not queued.get("remote_board_id"):
+                continue
+            try:
+                item = self.sync_board_pair(
+                    session_id,
+                    pair_index=pair_index,
+                    direction=normalized_direction,
+                    mode=sync_mode,
+                )
+                synced.append(
+                    {
+                        "pair_index": pair_index,
+                        "local_title": item.get("result", {}).get("local_title") or queued.get("local_title"),
+                        "remote_title": item.get("result", {}).get("remote_title") or queued.get("remote_title"),
+                        "status": item.get("result", {}).get("status"),
+                    }
+                )
+            except ValueError as error:
+                errors.append(
+                    {
+                        "pair_index": pair_index,
+                        "local_title": queued.get("local_title"),
+                        "remote_title": queued.get("remote_title"),
+                        "message": str(error),
+                    }
+                )
+
+        progress = session.get("progress") or {}
+        if not synced:
+            message = errors[0]["message"] if errors else "没有看板被同步"
+            raise ValueError(message)
+
+        direction_label = "本地 → 远程" if normalized_direction == "to_remote" else "远程 → 本地"
+        summary = f"{direction_label}：已同步 {len(synced)} 个看板"
+        if errors:
+            summary += f"，{len(errors)} 个失败"
+
+        return {
+            "message": summary,
+            "direction": normalized_direction,
+            "mode": sync_mode,
+            "account_pair_index": account_pair_index,
+            "synced_count": len(synced),
+            "error_count": len(errors),
+            "synced": synced,
+            "errors": errors,
+            "board_pairs": copy.deepcopy(progress.get("queued_board_pairs") or []),
+            "board_results": copy.deepcopy(progress.get("board_results") or []),
+            "account_pair": copy.deepcopy(account_pairs[account_pair_index]),
         }
 
     def _get_session_or_raise(self, session_id: str) -> dict[str, Any]:

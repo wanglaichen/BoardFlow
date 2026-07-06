@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from services.data_transfer import _resolve_board_organization, apply_import
+from services.data_transfer import _resolve_board_organization, _remap_entities
 from services.federation_service import (
     build_tenant_context_for_federation,
 )
@@ -198,14 +198,28 @@ def apply_board_sync_payload(
         payload["board"] = board
 
     old_board_ids = {str(item.get("id")) for item in tenant_data.get("boards") or [] if item.get("id") is not None}
-    updated = apply_import(copy.deepcopy(tenant_data), {"kind": "board", "payload": payload}, mode=sync_mode)
-    storage.write_tenant(tenant_ctx, updated, settings)
+    result = copy.deepcopy(tenant_data)
+    board = copy.deepcopy(payload.get("board") or {})
+    lists = copy.deepcopy(payload.get("lists") or [])
+    cards = copy.deepcopy(payload.get("cards") or [])
+    board_id = str(board.get("id") or "")
+
+    if sync_mode == "replace" and board_id:
+        result["boards"] = [item for item in result.get("boards") or [] if str(item.get("id")) != board_id]
+        result["lists"] = [item for item in result.get("lists") or [] if str(item.get("board_id")) != board_id]
+        result["cards"] = [item for item in result.get("cards") or [] if str(item.get("board_id")) != board_id]
+
+    remapped_boards, remapped_lists, remapped_cards = _remap_entities([board], lists, cards, result)
+    result.setdefault("boards", []).extend(remapped_boards)
+    result.setdefault("lists", []).extend(remapped_lists)
+    result.setdefault("cards", []).extend(remapped_cards)
+    storage.write_tenant(tenant_ctx, result, settings)
 
     result_id = normalized_target or source_board_id
     if sync_mode == "merge" and not normalized_target:
         new_boards = [
             item
-            for item in updated.get("boards") or []
+            for item in result.get("boards") or []
             if str(item.get("id")) not in old_board_ids
         ]
         if new_boards:

@@ -2423,6 +2423,7 @@ function renderBoardComparePanel() {
             </div>
 
             <div class="compare-workspace" id="compareWorkspace" hidden>
+                <div class="compare-sync-feedback" id="compareSyncFeedback" hidden role="status" aria-live="polite"></div>
                 <div class="compare-workspace-toolbar">
                     <div class="compare-filter-group" role="tablist" aria-label="对比结果筛选">
                         <button class="compare-filter-btn active" type="button" data-compare-filter="all">全部</button>
@@ -2788,7 +2789,7 @@ function compareRowMatchesFilter(status, pairStatus) {
     return true;
 }
 
-function renderCompareAccountPairRow(pair) {
+function renderCompareAccountPairRow(pair, accountPairIndex) {
     const status = pair.status || "matched";
     const localName = pair.local?.display_name || pair.local?.tenant_id || "—";
     const remoteName = pair.remote?.display_name || pair.remote?.tenant_id || "—";
@@ -2804,9 +2805,28 @@ function renderCompareAccountPairRow(pair) {
         <div class="compare-diff-row compare-diff-row--account compare-diff-row--${escapeHtml(status)}">
             ${localCell}
             <div class="compare-cell compare-cell--status">
+                ${renderCompareAccountSyncActions(accountPairIndex, pair)}
                 <span class="compare-result-badge compare-result-badge--${escapeHtml(status === "matched" ? "equal" : status)}">${escapeHtml(status === "matched" ? "账号匹配" : compareStatusLabel(status))}</span>
             </div>
             ${remoteCell}
+        </div>
+    `;
+}
+
+function renderCompareAccountSyncActions(accountPairIndex, pair) {
+    if (!compareUiState.sessionId) {
+        return "";
+    }
+    const status = pair.status || "matched";
+    const canToRemote = status !== "only_remote" && Boolean(pair.local);
+    const canToLocal = status !== "only_local" && Boolean(pair.remote);
+    if (!canToRemote && !canToLocal) {
+        return "";
+    }
+    return `
+        <div class="compare-sync-actions">
+            <button class="compare-sync-btn" type="button" title="该账号全部看板：远程 → 本地" data-sync-scope="account" data-sync-direction="to_local" data-account-pair-index="${accountPairIndex}" ${canToLocal ? "" : "disabled"} aria-label="账号全部看板同步到本地">←</button>
+            <button class="compare-sync-btn" type="button" title="该账号全部看板：本地 → 远程" data-sync-scope="account" data-sync-direction="to_remote" data-account-pair-index="${accountPairIndex}" ${canToRemote ? "" : "disabled"} aria-label="账号全部看板同步到远程">→</button>
         </div>
     `;
 }
@@ -2823,8 +2843,8 @@ function renderCompareSyncActions(pairIndex, pair, status) {
     }
     return `
         <div class="compare-sync-actions">
-            <button class="compare-sync-btn" type="button" title="远程 → 本地（← 复制）" data-sync-direction="to_local" data-pair-index="${pairIndex}" ${canToLocal ? "" : "disabled"} aria-label="远程同步到本地">←</button>
-            <button class="compare-sync-btn" type="button" title="本地 → 远程（→ 复制）" data-sync-direction="to_remote" data-pair-index="${pairIndex}" ${canToRemote ? "" : "disabled"} aria-label="本地同步到远程">→</button>
+            <button class="compare-sync-btn" type="button" title="远程 → 本地（← 复制）" data-sync-scope="board" data-sync-direction="to_local" data-pair-index="${pairIndex}" ${canToLocal ? "" : "disabled"} aria-label="远程同步到本地">←</button>
+            <button class="compare-sync-btn" type="button" title="本地 → 远程（→ 复制）" data-sync-scope="board" data-sync-direction="to_remote" data-pair-index="${pairIndex}" ${canToRemote ? "" : "disabled"} aria-label="本地同步到远程">→</button>
         </div>
     `;
 }
@@ -2875,7 +2895,9 @@ function renderCompareWorkspace() {
 
     const sections = [];
     if (compareUiState.accountPairs.length) {
-        const accountRows = compareUiState.accountPairs.map((pair) => renderCompareAccountPairRow(pair)).join("");
+        const accountRows = compareUiState.accountPairs
+            .map((pair, index) => renderCompareAccountPairRow(pair, index))
+            .join("");
         sections.push(renderCompareCollapseHeader("section:accounts", "账号对齐", compareUiState.accountPairs.length, 0));
         sections.push(renderCompareCollapseBody("section:accounts", accountRows));
     }
@@ -2927,8 +2949,14 @@ function bindCompareWorkspaceRows() {
             if (button.disabled) {
                 return;
             }
-            const pairIndex = Number(button.dataset.pairIndex);
             const direction = button.dataset.syncDirection;
+            const scope = button.dataset.syncScope || "board";
+            if (scope === "account") {
+                const accountPairIndex = Number(button.dataset.accountPairIndex);
+                await syncCompareAccountPair(accountPairIndex, direction, button);
+                return;
+            }
+            const pairIndex = Number(button.dataset.pairIndex);
             await syncComparePair(pairIndex, direction, button);
         });
     });
@@ -2997,6 +3025,60 @@ function compareStatusLabel(status) {
         pending: "对比中",
     };
     return labels[status] || status || "—";
+}
+
+function parseCompareJsonResponse(response) {
+    return response.text().then((text) => {
+        if (!text) {
+            return {};
+        }
+        try {
+            return JSON.parse(text);
+        } catch (error) {
+            throw new Error(text.slice(0, 240) || `请求失败（HTTP ${response.status}）`);
+        }
+    });
+}
+
+function showCompareSyncFeedback(message, type = "info") {
+    const box = document.getElementById("compareSyncFeedback");
+    if (box) {
+        box.hidden = false;
+        box.className = `compare-sync-feedback compare-sync-feedback--${type}`;
+        box.textContent = message;
+        box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+    if (type === "success") {
+        showSuccess(message);
+    } else if (type === "error") {
+        showError(message);
+        errorBox?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+}
+
+function clearCompareSyncFeedback() {
+    const box = document.getElementById("compareSyncFeedback");
+    if (box) {
+        box.hidden = true;
+        box.textContent = "";
+        box.className = "compare-sync-feedback";
+    }
+}
+
+function isAppVersionAtLeast(version, target) {
+    const left = String(version || "0").split(".").map((part) => Number.parseInt(part, 10) || 0);
+    const right = String(target || "0").split(".").map((part) => Number.parseInt(part, 10) || 0);
+    for (let index = 0; index < 3; index += 1) {
+        const lv = left[index] || 0;
+        const rv = right[index] || 0;
+        if (lv > rv) {
+            return true;
+        }
+        if (lv < rv) {
+            return false;
+        }
+    }
+    return true;
 }
 
 function renderCompareTree() {
@@ -3117,10 +3199,12 @@ async function fetchComparePairDetail(pairIndex) {
 
 async function syncComparePair(pairIndex, direction, triggerButton) {
     if (!compareUiState.sessionId) {
+        showCompareSyncFeedback("对比会话已失效，请先「探测远程连接」并重新「开始对比」。", "error");
         return;
     }
     const pair = compareUiState.boardPairs[pairIndex];
     if (!pair) {
+        showCompareSyncFeedback("看板对不存在，请重新运行对比。", "error");
         return;
     }
     const directionLabel = direction === "to_remote" ? "本地 → 远程" : "远程 → 本地";
@@ -3130,7 +3214,12 @@ async function syncComparePair(pairIndex, direction, triggerButton) {
         return;
     }
 
-    const buttons = document.querySelectorAll(`.compare-sync-btn[data-pair-index="${pairIndex}"]`);
+    clearCompareSyncFeedback();
+    showCompareSyncFeedback(`正在同步「${sideLabel || "看板"}」…`, "info");
+
+    const buttons = document.querySelectorAll(
+        `.compare-sync-btn[data-sync-scope="board"][data-pair-index="${pairIndex}"]`,
+    );
     buttons.forEach((node) => {
         node.disabled = true;
     });
@@ -3142,15 +3231,21 @@ async function syncComparePair(pairIndex, direction, triggerButton) {
         const response = await fetch(`/api/compare/sessions/${encodeURIComponent(compareUiState.sessionId)}/sync`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
+            credentials: "same-origin",
             body: JSON.stringify({
                 pair_index: pairIndex,
                 direction,
                 mode: "replace",
             }),
         });
-        const payload = await response.json();
+        const payload = await parseCompareJsonResponse(response);
         if (!response.ok) {
-            throw new Error(payload.message || "同步失败");
+            const message = payload.message || "同步失败";
+            if (message.includes("会话不存在") || message.includes("已过期")) {
+                compareUiState.sessionId = null;
+                throw new Error(`${message}。请先「探测远程连接」并重新「开始对比」。`);
+            }
+            throw new Error(message);
         }
         if (payload.queued) {
             compareUiState.boardPairs[pairIndex] = {
@@ -3170,9 +3265,87 @@ async function syncComparePair(pairIndex, direction, triggerButton) {
         }
         compareUiState.expandedPairIndex = pairIndex;
         renderCompareWorkspace();
-        showSuccess(payload.message || "同步成功");
+        showCompareSyncFeedback(payload.message || "同步成功", "success");
     } catch (error) {
-        showError(error.message || "同步失败");
+        showCompareSyncFeedback(error.message || "同步失败", "error");
+        renderCompareWorkspace();
+    }
+}
+
+async function syncCompareAccountPair(accountPairIndex, direction, triggerButton) {
+    if (!compareUiState.sessionId) {
+        showCompareSyncFeedback("对比会话已失效，请先「探测远程连接」并重新「开始对比」。", "error");
+        return;
+    }
+    const pair = compareUiState.accountPairs[accountPairIndex];
+    if (!pair) {
+        showCompareSyncFeedback("账号对不存在，请重新运行对比。", "error");
+        return;
+    }
+    const accountName =
+        pair.local?.display_name ||
+        pair.remote?.display_name ||
+        pair.local?.tenant_id ||
+        pair.remote?.tenant_id ||
+        "账号";
+    const directionLabel = direction === "to_remote" ? "本地 → 远程" : "远程 → 本地";
+    const confirmed = window.confirm(
+        `确定将账号「${accountName}」下的全部看板 ${directionLabel} 同步？\n已匹配的看板将覆盖目标侧内容。`,
+    );
+    if (!confirmed) {
+        return;
+    }
+
+    clearCompareSyncFeedback();
+    showCompareSyncFeedback(`正在同步账号「${accountName}」下的看板…`, "info");
+
+    const buttons = document.querySelectorAll(
+        `.compare-sync-btn[data-sync-scope="account"][data-account-pair-index="${accountPairIndex}"]`,
+    );
+    buttons.forEach((node) => {
+        node.disabled = true;
+    });
+    if (triggerButton) {
+        triggerButton.textContent = "…";
+    }
+
+    try {
+        const response = await fetch(
+            `/api/compare/sessions/${encodeURIComponent(compareUiState.sessionId)}/sync-account`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "same-origin",
+                body: JSON.stringify({
+                    account_pair_index: accountPairIndex,
+                    direction,
+                    mode: "replace",
+                }),
+            },
+        );
+        const payload = await parseCompareJsonResponse(response);
+        if (!response.ok) {
+            const message = payload.message || "账号同步失败";
+            if (message.includes("会话不存在") || message.includes("已过期")) {
+                compareUiState.sessionId = null;
+                throw new Error(`${message}。请先「探测远程连接」并重新「开始对比」。`);
+            }
+            throw new Error(message);
+        }
+        if (Array.isArray(payload.board_pairs)) {
+            compareUiState.boardPairs = payload.board_pairs;
+        }
+        if (Array.isArray(payload.board_results)) {
+            compareUiState.boardResults = payload.board_results;
+        }
+        renderCompareWorkspace();
+        if (payload.error_count > 0) {
+            showCompareSyncFeedback(payload.message || "部分看板同步失败", "error");
+        } else {
+            showCompareSyncFeedback(payload.message || "账号同步成功", "success");
+        }
+    } catch (error) {
+        showCompareSyncFeedback(error.message || "账号同步失败", "error");
         renderCompareWorkspace();
     }
 }
@@ -3439,8 +3612,13 @@ function bindBoardComparePanel() {
                 healthBox.hidden = false;
                 const health = result.remote_health || {};
                 const federation = health.federation || {};
+                const syncEnabled =
+                    federation.sync_enabled === true || isAppVersionAtLeast(health.version, "0.2.6");
+                const syncHint = syncEnabled
+                    ? "支持看板同步写入"
+                    : '<span class="compare-health-warn">远程版本较旧或未启用同步写入（需 v0.2.6+）</span>';
                 healthBox.innerHTML = `
-                    <p class="compare-health-ok">远程连接成功：${escapeHtml(health.label || health.version || "")} · 联邦 API v${escapeHtml(String(federation.api_version || ""))}</p>
+                    <p class="compare-health-ok">远程连接成功：${escapeHtml(health.label || health.version || "")} · 联邦 API v${escapeHtml(String(federation.api_version || ""))} · ${syncHint}</p>
                 `;
             }
             showSuccess("远程连接探测成功");

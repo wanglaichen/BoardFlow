@@ -1105,6 +1105,36 @@ body {
     margin-top: 24px;
 }
 
+.compare-sync-feedback {
+    margin-bottom: 10px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.compare-sync-feedback--info {
+    background: rgba(59, 130, 246, 0.12);
+    border: 1px solid rgba(59, 130, 246, 0.28);
+    color: #1d4ed8;
+}
+
+.compare-sync-feedback--success {
+    background: rgba(34, 197, 94, 0.12);
+    border: 1px solid rgba(34, 197, 94, 0.28);
+    color: #15803d;
+}
+
+.compare-sync-feedback--error {
+    background: rgba(239, 68, 68, 0.12);
+    border: 1px solid rgba(239, 68, 68, 0.28);
+    color: #b91c1c;
+}
+
+.compare-health-warn {
+    color: #b45309;
+}
+
 .compare-workspace-toolbar {
     display: flex;
     flex-wrap: wrap;

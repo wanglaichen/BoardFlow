@@ -52,6 +52,7 @@ def build_health_payload(*, version: str, enabled: bool) -> dict[str, Any]:
         "federation": {
             "enabled": enabled,
             "api_version": FEDERATION_API_VERSION,
+            "sync_enabled": enabled,
         },
     }
 
