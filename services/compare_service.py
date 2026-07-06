@@ -304,6 +304,10 @@ class CompareService:
             self._purge_expired_sessions()
             session = self._sessions.get(session_id)
             if not session:
+                session = self._load_session_from_redis(session_id)
+                if session:
+                    self._sessions[session_id] = session
+            if not session:
                 return None
             return self._public_session(session)
 
@@ -314,8 +318,21 @@ class CompareService:
             self.storage._redis().client.delete(self._session_redis_key(session_id))
         return existed
 
+    def _normalize_progress_for_public(self, progress: dict[str, Any]) -> dict[str, Any]:
+        payload = copy.deepcopy(progress)
+        account_remote_map = payload.get("account_remote_map") or {}
+        if account_remote_map:
+            normalized_map: dict[str, Any] = {}
+            for key, value in account_remote_map.items():
+                if isinstance(key, tuple) and len(key) == 2:
+                    normalized_map[_account_map_key(str(key[0]), str(key[1]))] = value
+                else:
+                    normalized_map[str(key)] = value
+            payload["account_remote_map"] = normalized_map
+        return payload
+
     def _public_session(self, session: dict[str, Any]) -> dict[str, Any]:
-        progress = copy.deepcopy(session.get("progress") or {})
+        progress = self._normalize_progress_for_public(session.get("progress") or {})
         board_results = progress.get("board_results") or []
         progress["board_results_summary"] = [
             {
