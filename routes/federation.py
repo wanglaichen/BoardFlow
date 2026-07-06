@@ -103,4 +103,45 @@ def init_federation(storage):
         except ValueError as error:
             return jsonify({"message": str(error)}), 404
 
+    @bp.route("/accounts/<tenant_type>/<tenant_id>/boards/<board_id>/export", methods=["GET"])
+    def federation_board_export(tenant_type: str, tenant_id: str, board_id: str):
+        try:
+            build_tenant_context_for_federation(tenant_type, tenant_id)
+        except ValueError as error:
+            return jsonify({"message": str(error)}), 400
+        from services.compare_sync import load_board_full_sync_payload
+
+        try:
+            payload = load_board_full_sync_payload(storage, tenant_type, tenant_id, board_id)
+        except ValueError as error:
+            return jsonify({"message": str(error)}), 404
+        return jsonify({"payload": payload})
+
+    @bp.route("/accounts/<tenant_type>/<tenant_id>/boards/sync", methods=["POST"])
+    def federation_board_sync(tenant_type: str, tenant_id: str):
+        try:
+            build_tenant_context_for_federation(tenant_type, tenant_id)
+        except ValueError as error:
+            return jsonify({"message": str(error)}), 400
+        body = request.get_json(silent=True) or {}
+        sync_payload = body.get("payload")
+        if not isinstance(sync_payload, dict):
+            return jsonify({"message": "payload 无效"}), 400
+        target_board_id = (body.get("target_board_id") or "").strip() or None
+        mode = (body.get("mode") or "replace").strip()
+        from services.compare_sync import apply_board_sync_payload
+
+        try:
+            result = apply_board_sync_payload(
+                storage,
+                tenant_type,
+                tenant_id,
+                sync_payload,
+                target_board_id=target_board_id,
+                mode=mode,
+            )
+        except ValueError as error:
+            return jsonify({"message": str(error)}), 400
+        return jsonify(result)
+
     return bp

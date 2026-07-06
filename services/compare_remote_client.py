@@ -50,18 +50,31 @@ class CompareRemoteClient:
             return "无法连接远程实例" in message or "远程请求失败（5" in message
         return False
 
-    def _request_json_once(self, path: str, *, query: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _request_json_once(
+        self,
+        path: str,
+        *,
+        query: dict[str, Any] | None = None,
+        method: str = "GET",
+        body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         query_pairs = {key: value for key, value in (query or {}).items() if value is not None and value != ""}
         url = f"{self.base_url}{path}"
         if query_pairs:
             url = f"{url}?{urlencode(query_pairs)}"
+        headers = {
+            "Accept": "application/json",
+            "X-Federation-Token": self.token,
+        }
+        data = None
+        if body is not None:
+            data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+            headers["Content-Type"] = "application/json"
         request = Request(
             url,
-            headers={
-                "Accept": "application/json",
-                "X-Federation-Token": self.token,
-            },
-            method="GET",
+            data=data,
+            headers=headers,
+            method=method.upper(),
         )
         try:
             with urlopen(request, timeout=self.timeout) as response:
@@ -85,11 +98,18 @@ class CompareRemoteClient:
             raise CompareRemoteError("远程响应格式无效")
         return payload
 
-    def _request_json(self, path: str, *, query: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _request_json(
+        self,
+        path: str,
+        *,
+        query: dict[str, Any] | None = None,
+        method: str = "GET",
+        body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         last_error: Exception | None = None
         for attempt in range(self.retry_count + 1):
             try:
-                return self._request_json_once(path, query=query)
+                return self._request_json_once(path, query=query, method=method, body=body)
             except (HTTPError, URLError, CompareRemoteError) as error:
                 last_error = error
                 if attempt >= self.retry_count or not self._should_retry(error):
@@ -158,6 +178,31 @@ class CompareRemoteClient:
                 "cursor": cursor,
                 "limit": limit,
                 "include_description": "1" if include_description else None,
+            },
+        )
+
+    def load_board_full_sync_payload(self, tenant_type: str, tenant_id: str, board_id: str) -> dict[str, Any]:
+        payload = self._request_json(
+            f"/api/federation/accounts/{tenant_type}/{tenant_id}/boards/{board_id}/export",
+        )
+        return payload.get("payload") or payload
+
+    def apply_board_sync(
+        self,
+        tenant_type: str,
+        tenant_id: str,
+        sync_payload: dict[str, Any],
+        *,
+        target_board_id: str | None = None,
+        mode: str = "replace",
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/federation/accounts/{tenant_type}/{tenant_id}/boards/sync",
+            method="POST",
+            body={
+                "payload": sync_payload,
+                "target_board_id": target_board_id,
+                "mode": mode,
             },
         )
 

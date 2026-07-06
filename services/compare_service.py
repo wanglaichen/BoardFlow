@@ -150,6 +150,7 @@ def _queue_board_pairs_for_account(
                     "remote_board_id": None,
                     "status": "only_local",
                     "local_title": local_board.get("title") or "",
+                    "local_organization": local_board.get("organization") or "",
                 }
             )
             continue
@@ -164,6 +165,8 @@ def _queue_board_pairs_for_account(
                 "status": "matched",
                 "local_title": local_board.get("title") or "",
                 "remote_title": remote_board.get("title") or "",
+                "local_organization": local_board.get("organization") or "",
+                "remote_organization": remote_board.get("organization") or "",
             }
         )
 
@@ -178,6 +181,7 @@ def _queue_board_pairs_for_account(
                 "remote_board_id": remote_id,
                 "status": "only_remote",
                 "remote_title": remote_board.get("title") or "",
+                "remote_organization": remote_board.get("organization") or "",
             }
         )
     return queued
@@ -374,6 +378,138 @@ class CompareService:
             "done": safe_offset + len(page_items) >= len(results),
         }
 
+    def sync_board_pair(
+        self,
+        session_id: str,
+        *,
+        pair_index: int,
+        direction: str,
+        mode: str = "replace",
+    ) -> dict[str, Any]:
+        normalized_direction = (direction or "").strip().lower()
+        if normalized_direction not in ("to_local", "to_remote"):
+            raise ValueError("direction 必须是 to_local 或 to_remote")
+        sync_mode = (mode or "replace").strip().lower()
+        if sync_mode not in ("replace", "merge"):
+            raise ValueError("mode 必须是 replace 或 merge")
+
+        session = self._get_session_or_raise(session_id)
+        client = CompareRemoteClient(self.config, session["remote_base_url"], session["remote_token"])
+        progress = session.get("progress") or {}
+        queued_pairs = progress.get("queued_board_pairs") or []
+        if pair_index < 0 or pair_index >= len(queued_pairs):
+            raise ValueError("看板对不存在")
+
+        queued = queued_pairs[pair_index]
+        account_remote_map = progress.get("account_remote_map") or {}
+        remote_account = account_remote_map.get(
+            _account_key({"tenant_type": queued.get("tenant_type"), "tenant_id": queued.get("tenant_id")}),
+        ) or {
+            "tenant_type": queued.get("tenant_type"),
+            "tenant_id": queued.get("tenant_id"),
+        }
+
+        from services.compare_sync import apply_board_sync_payload, load_board_full_sync_payload
+
+        pair_status = queued.get("status") or "matched"
+        local_tenant_type = str(queued.get("tenant_type") or "")
+        local_tenant_id = str(queued.get("tenant_id") or "")
+        remote_tenant_type = str(remote_account.get("tenant_type") or local_tenant_type)
+        remote_tenant_id = str(remote_account.get("tenant_id") or local_tenant_id)
+        sync_result: dict[str, Any]
+
+        if normalized_direction == "to_remote":
+            if pair_status == "only_remote":
+                raise ValueError("该看板仅存在于远程，无法同步到远程")
+            local_board_id = str(queued.get("local_board_id") or "").strip()
+            if not local_board_id:
+                raise ValueError("缺少本地看板 ID")
+            payload = load_board_full_sync_payload(self.storage, local_tenant_type, local_tenant_id, local_board_id)
+            if pair_status == "only_local":
+                target_board_id = None
+                effective_mode = "merge"
+            else:
+                target_board_id = str(queued.get("remote_board_id") or "").strip() or None
+                effective_mode = sync_mode if target_board_id else "merge"
+            sync_result = client.apply_board_sync(
+                remote_tenant_type,
+                remote_tenant_id,
+                payload,
+                target_board_id=target_board_id,
+                mode=effective_mode,
+            )
+            remote_board_id = str(sync_result.get("board_id") or "").strip()
+            if pair_status == "only_local" and remote_board_id:
+                queued["remote_board_id"] = remote_board_id
+                queued["remote_title"] = (payload.get("board") or {}).get("title") or queued.get("local_title")
+                queued["remote_organization"] = (payload.get("board") or {}).get("organization") or queued.get(
+                    "local_organization"
+                )
+                queued["status"] = "matched"
+        else:
+            if pair_status == "only_local":
+                raise ValueError("该看板仅存在于本地，无法从远程同步")
+            remote_board_id = str(queued.get("remote_board_id") or "").strip()
+            if not remote_board_id:
+                raise ValueError("缺少远程看板 ID")
+            payload = client.load_board_full_sync_payload(remote_tenant_type, remote_tenant_id, remote_board_id)
+            if pair_status == "only_remote":
+                target_board_id = None
+                effective_mode = "merge"
+            else:
+                target_board_id = str(queued.get("local_board_id") or "").strip() or None
+                effective_mode = sync_mode if target_board_id else "merge"
+            sync_result = apply_board_sync_payload(
+                self.storage,
+                local_tenant_type,
+                local_tenant_id,
+                payload,
+                target_board_id=target_board_id,
+                mode=effective_mode,
+            )
+            local_board_id = str(sync_result.get("board_id") or "").strip()
+            if pair_status == "only_remote" and local_board_id:
+                queued["local_board_id"] = local_board_id
+                queued["local_title"] = (payload.get("board") or {}).get("title") or queued.get("remote_title")
+                queued["local_organization"] = (payload.get("board") or {}).get("organization") or queued.get(
+                    "remote_organization"
+                )
+                queued["status"] = "matched"
+
+        new_result = self._compute_board_pair_diff(
+            client=client,
+            session=session,
+            queued=queued,
+            pair_index=pair_index,
+            remote_account=remote_account,
+        )
+        board_results = progress.get("board_results") or []
+        updated = False
+        for index, item in enumerate(board_results):
+            if int(item.get("pair_index", -1)) == pair_index:
+                board_results[index] = new_result
+                updated = True
+                break
+        if not updated:
+            board_results.append(new_result)
+
+        queued_pairs[pair_index] = queued
+        self._update_session_progress(
+            session,
+            queued_board_pairs=queued_pairs,
+            board_results=board_results,
+        )
+
+        direction_label = "本地 → 远程" if normalized_direction == "to_remote" else "远程 → 本地"
+        return {
+            "message": f"{direction_label} 同步成功",
+            "direction": normalized_direction,
+            "mode": sync_mode,
+            "sync": sync_result,
+            "result": new_result,
+            "queued": copy.deepcopy(queued),
+        }
+
     def _get_session_or_raise(self, session_id: str) -> dict[str, Any]:
         with self._lock:
             self._purge_expired_sessions()
@@ -387,6 +523,74 @@ class CompareService:
         progress = session.setdefault("progress", {})
         progress.update(kwargs)
         session["progress"] = progress
+
+    def _compute_board_pair_diff(
+        self,
+        *,
+        client: CompareRemoteClient,
+        session: dict[str, Any],
+        queued: dict[str, Any],
+        pair_index: int,
+        remote_account: dict[str, Any],
+    ) -> dict[str, Any]:
+        options = session.get("options") or {}
+        compare_lists = options.get("compare_lists", True) is not False
+        compare_cards = options.get("compare_cards", True) is not False
+        include_description = options.get("compare_card_description") is True
+        extra_card_fields = ("description",) if include_description else ()
+        pair_status = queued.get("status") or "matched"
+
+        if pair_status in ("only_local", "only_remote"):
+            return build_board_compare_result(pair_index=pair_index, queued=queued)
+
+        tenant_type = str(queued.get("tenant_type") or "")
+        tenant_id = str(queued.get("tenant_id") or "")
+        local_board_id = str(queued.get("local_board_id") or "")
+        remote_board_id = str(queued.get("remote_board_id") or "")
+        remote_tenant_type = str(remote_account.get("tenant_type") or tenant_type)
+        remote_tenant_id = str(remote_account.get("tenant_id") or tenant_id)
+
+        try:
+            local_snapshot = load_board_compare_snapshot(
+                self.storage,
+                tenant_type,
+                tenant_id,
+                local_board_id,
+                include_description=include_description,
+            )
+            remote_snapshot = client.load_board_compare_snapshot(
+                remote_tenant_type,
+                remote_tenant_id,
+                remote_board_id,
+                include_description=include_description,
+            )
+        except (CompareRemoteError, ValueError) as error:
+            return build_board_compare_result(pair_index=pair_index, queued=queued, error=str(error))
+
+        meta_diff = diff_board_meta(local_snapshot.get("board"), remote_snapshot.get("board"))
+        lists_diff = None
+        if compare_lists:
+            lists_diff = diff_lists(local_snapshot.get("lists") or [], remote_snapshot.get("lists") or [])
+
+        cards_diff_by_list: dict[str, dict[str, Any]] = {}
+        if compare_cards:
+            local_cards_map = local_snapshot.get("cards_by_list") or {}
+            remote_cards_map = remote_snapshot.get("cards_by_list") or {}
+            list_ids = sorted(set(local_cards_map.keys()) | set(remote_cards_map.keys()))
+            for list_id in list_ids:
+                cards_diff_by_list[list_id] = diff_cards(
+                    local_cards_map.get(list_id) or [],
+                    remote_cards_map.get(list_id) or [],
+                    extra_fields=extra_card_fields,
+                )
+
+        return build_board_compare_result(
+            pair_index=pair_index,
+            queued=queued,
+            meta_diff=meta_diff,
+            lists_diff=lists_diff,
+            cards_diff_by_list=cards_diff_by_list,
+        )
 
     def _iter_board_pair_diff(
         self,

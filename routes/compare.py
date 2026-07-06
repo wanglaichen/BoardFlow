@@ -89,4 +89,28 @@ def init_compare(compare_service, auth_service):
             return jsonify({"message": str(error)}), 404
         return jsonify(result)
 
+    @bp.route("/sessions/<session_id>/sync", methods=["POST"])
+    def sync_compare_board(session_id: str):
+        _require_super_admin()
+        payload = request.get_json(silent=True) or {}
+        pair_index_raw = payload.get("pair_index")
+        if pair_index_raw is None:
+            return jsonify({"message": "pair_index 不能为空"}), 400
+        try:
+            pair_index = int(pair_index_raw)
+        except (TypeError, ValueError):
+            return jsonify({"message": "pair_index 无效"}), 400
+        direction = (payload.get("direction") or "").strip()
+        mode = (payload.get("mode") or "replace").strip()
+        try:
+            result = compare_service.sync_board_pair(
+                session_id,
+                pair_index=pair_index,
+                direction=direction,
+                mode=mode,
+            )
+        except ValueError as error:
+            return jsonify({"message": str(error)}), 400
+        return jsonify(result)
+
     return bp

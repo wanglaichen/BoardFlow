@@ -2422,25 +2422,25 @@ function renderBoardComparePanel() {
                 <p class="transfer-clear-progress-text" id="compareProgressText"></p>
             </div>
 
-            <div class="compare-tree" id="compareTree" hidden>
-                <h3>账号与看板拉取</h3>
-                <div id="compareTreeBody"></div>
-            </div>
+            <div class="compare-workspace" id="compareWorkspace" hidden>
+                <div class="compare-workspace-toolbar">
+                    <div class="compare-filter-group" role="tablist" aria-label="对比结果筛选">
+                        <button class="compare-filter-btn active" type="button" data-compare-filter="all">全部</button>
+                        <button class="compare-filter-btn" type="button" data-compare-filter="changed">有差异</button>
+                        <button class="compare-filter-btn" type="button" data-compare-filter="equal">一致</button>
+                        <button class="compare-filter-btn" type="button" data-compare-filter="only_local">仅本地</button>
+                        <button class="compare-filter-btn" type="button" data-compare-filter="only_remote">仅远程</button>
+                    </div>
+                    <p class="compare-workspace-hint">左右对照：一侧有、一侧无时只显示存在的一侧（类似 Beyond Compare / Navicat）</p>
+                </div>
 
-            <div class="compare-results" id="compareResults" hidden>
-                <h3>看板对比结果</h3>
-                <div class="compare-results-table-wrap">
-                    <table class="compare-results-table">
-                        <thead>
-                            <tr>
-                                <th>本地看板</th>
-                                <th>远程看板</th>
-                                <th>状态</th>
-                                <th></th>
-                            </tr>
-                        </thead>
-                        <tbody id="compareResultsBody"></tbody>
-                    </table>
+                <div class="compare-diff-shell">
+                    <div class="compare-diff-header">
+                        <div class="compare-diff-col compare-diff-col--local">本地</div>
+                        <div class="compare-diff-col compare-diff-col--status">状态</div>
+                        <div class="compare-diff-col compare-diff-col--remote">远程</div>
+                    </div>
+                    <div class="compare-diff-body" id="compareDiffBody"></div>
                 </div>
             </div>
 
@@ -2448,7 +2448,7 @@ function renderBoardComparePanel() {
         </div>
         <div class="compare-detail-drawer" id="compareDetailDrawer" hidden>
             <div class="compare-detail-backdrop" id="compareDetailBackdrop"></div>
-            <div class="compare-detail-panel" role="dialog" aria-modal="true" aria-labelledby="compareDetailTitle">
+            <div class="compare-detail-panel compare-detail-panel--wide" role="dialog" aria-modal="true" aria-labelledby="compareDetailTitle">
                 <div class="compare-detail-head">
                     <h3 id="compareDetailTitle">对比详情</h3>
                     <button class="btn btn-sm btn-outline-secondary" id="compareDetailCloseBtn" type="button">关闭</button>
@@ -2464,8 +2464,11 @@ const compareUiState = {
     sessionId: null,
     remoteHealth: null,
     accounts: new Map(),
+    accountPairs: [],
     boardPairs: [],
     boardResults: [],
+    activeFilter: "all",
+    expandedPairIndex: null,
     canResume: false,
     resumeFromPairIndex: 0,
 };
@@ -2474,8 +2477,11 @@ function resetCompareUiState() {
     compareUiState.sessionId = null;
     compareUiState.remoteHealth = null;
     compareUiState.accounts = new Map();
+    compareUiState.accountPairs = [];
     compareUiState.boardPairs = [];
     compareUiState.boardResults = [];
+    compareUiState.activeFilter = "all";
+    compareUiState.expandedPairIndex = null;
     compareUiState.canResume = false;
     compareUiState.resumeFromPairIndex = 0;
 }
@@ -2567,47 +2573,227 @@ function accountKeyFromParts(tenantType, tenantId) {
     return `${tenantType}:${tenantId}`;
 }
 
-function renderCompareTree() {
-    const tree = document.getElementById("compareTree");
-    const body = document.getElementById("compareTreeBody");
-    if (!tree || !body) {
+function compareBoardSideLabel(pair, side) {
+    if (side === "local") {
+        if (!pair.local_board_id && pair.status === "only_remote") {
+            return null;
+        }
+        const title = pair.local_title || pair.local_board_id || "—";
+        const org = normalizeBoardOrganization(pair.local_organization);
+        return { title, org, id: pair.local_board_id || "" };
+    }
+    if (!pair.remote_board_id && pair.status === "only_local") {
+        return null;
+    }
+    const title = pair.remote_title || pair.remote_board_id || "—";
+    const org = normalizeBoardOrganization(pair.remote_organization);
+    return { title, org, id: pair.remote_board_id || "" };
+}
+
+function renderCompareBoardCell(sideInfo, side) {
+    if (!sideInfo) {
+        return `<div class="compare-cell compare-cell--empty compare-cell--${side}"><span class="compare-cell-empty-mark">—</span></div>`;
+    }
+    return `
+        <div class="compare-cell compare-cell--${side}">
+            <div class="compare-cell-title">${escapeHtml(sideInfo.title)}</div>
+            <div class="compare-cell-meta">${escapeHtml(sideInfo.org)}${sideInfo.id ? ` · ID ${escapeHtml(sideInfo.id)}` : ""}</div>
+        </div>
+    `;
+}
+
+function getCompareResultForPair(pairIndex) {
+    return compareUiState.boardResults.find((item) => Number(item.pair_index) === Number(pairIndex)) || null;
+}
+
+function compareRowMatchesFilter(status, pairStatus) {
+    const filter = compareUiState.activeFilter || "all";
+    if (filter === "all") {
+        return true;
+    }
+    if (filter === "changed") {
+        return status === "changed" || status === "error";
+    }
+    if (filter === "equal") {
+        return status === "equal";
+    }
+    if (filter === "only_local") {
+        return pairStatus === "only_local" || status === "only_local";
+    }
+    if (filter === "only_remote") {
+        return pairStatus === "only_remote" || status === "only_remote";
+    }
+    return true;
+}
+
+function renderCompareAccountPairRow(pair) {
+    const status = pair.status || "matched";
+    const localName = pair.local?.display_name || pair.local?.tenant_id || "—";
+    const remoteName = pair.remote?.display_name || pair.remote?.tenant_id || "—";
+    const localCell =
+        status === "only_remote"
+            ? `<div class="compare-cell compare-cell--empty compare-cell--local"><span class="compare-cell-empty-mark">—</span></div>`
+            : `<div class="compare-cell compare-cell--local"><div class="compare-cell-title">${escapeHtml(localName)}</div><div class="compare-cell-meta">账号</div></div>`;
+    const remoteCell =
+        status === "only_local"
+            ? `<div class="compare-cell compare-cell--empty compare-cell--remote"><span class="compare-cell-empty-mark">—</span></div>`
+            : `<div class="compare-cell compare-cell--remote"><div class="compare-cell-title">${escapeHtml(remoteName)}</div><div class="compare-cell-meta">账号</div></div>`;
+    return `
+        <div class="compare-diff-row compare-diff-row--account compare-diff-row--${escapeHtml(status)}">
+            ${localCell}
+            <div class="compare-cell compare-cell--status">
+                <span class="compare-result-badge compare-result-badge--${escapeHtml(status === "matched" ? "equal" : status)}">${escapeHtml(status === "matched" ? "账号匹配" : compareStatusLabel(status))}</span>
+            </div>
+            ${remoteCell}
+        </div>
+    `;
+}
+
+function renderCompareSyncActions(pairIndex, pair, status) {
+    if (status === "pending" || status === "error" || !compareUiState.sessionId) {
+        return "";
+    }
+    const pairStatus = pair.status || "matched";
+    const canToRemote = pairStatus !== "only_remote" && Boolean(pair.local_board_id);
+    const canToLocal = pairStatus !== "only_local" && Boolean(pair.remote_board_id);
+    if (!canToRemote && !canToLocal) {
+        return "";
+    }
+    return `
+        <div class="compare-sync-actions">
+            <button class="compare-sync-btn" type="button" title="远程 → 本地（← 复制）" data-sync-direction="to_local" data-pair-index="${pairIndex}" ${canToLocal ? "" : "disabled"} aria-label="远程同步到本地">←</button>
+            <button class="compare-sync-btn" type="button" title="本地 → 远程（→ 复制）" data-sync-direction="to_remote" data-pair-index="${pairIndex}" ${canToRemote ? "" : "disabled"} aria-label="本地同步到远程">→</button>
+        </div>
+    `;
+}
+
+function renderCompareBoardPairRow(pair, pairIndex, result) {
+    const pairStatus = pair.status || "matched";
+    const status = result?.status || (pairStatus === "matched" ? "pending" : pairStatus);
+    if (!compareRowMatchesFilter(status === "pending" ? pairStatus : status, pairStatus)) {
+        return "";
+    }
+    const localInfo = compareBoardSideLabel(pair, "local");
+    const remoteInfo = compareBoardSideLabel(pair, "remote");
+    const isExpanded = Number(compareUiState.expandedPairIndex) === Number(pairIndex);
+    const statusKey = status === "pending" ? pairStatus : status;
+    const badgeLabel = status === "pending" ? "对比中…" : compareStatusLabel(status);
+    return `
+        <div class="compare-diff-row compare-diff-row--board compare-diff-row--${escapeHtml(statusKey)} ${isExpanded ? "is-expanded" : ""}" data-pair-index="${pairIndex}">
+            ${renderCompareBoardCell(localInfo, "local")}
+            <div class="compare-cell compare-cell--status">
+                ${renderCompareSyncActions(pairIndex, pair, status)}
+                <span class="compare-result-badge compare-result-badge--${escapeHtml(statusKey === "pending" ? "changed" : statusKey)}">${escapeHtml(badgeLabel)}</span>
+                <button class="btn btn-sm btn-link compare-row-detail-btn" type="button" data-pair-index="${pairIndex}" ${status === "pending" ? "disabled" : ""}>${isExpanded ? "收起" : "详情"}</button>
+            </div>
+            ${renderCompareBoardCell(remoteInfo, "remote")}
+        </div>
+        ${
+            isExpanded
+                ? `<div class="compare-diff-expand" data-pair-index="${pairIndex}"><div class="compare-diff-expand-inner" id="compareExpandBody-${pairIndex}">${renderCompareDetailContent(result) || '<p class="compare-detail-empty">加载中…</p>'}</div></div>`
+                : ""
+        }
+    `;
+}
+
+function renderCompareWorkspace() {
+    const workspace = document.getElementById("compareWorkspace");
+    const body = document.getElementById("compareDiffBody");
+    if (!workspace || !body) {
         return;
     }
-    if (!compareUiState.accounts.size) {
-        tree.hidden = true;
+    const hasRows = compareUiState.accountPairs.length || compareUiState.boardPairs.length;
+    if (!hasRows) {
+        workspace.hidden = true;
         body.innerHTML = "";
         return;
     }
-    tree.hidden = false;
-    const statusLabels = {
-        matched: "已匹配",
-        only_local: "仅本地",
-        only_remote: "仅远程",
-    };
-    body.innerHTML = Array.from(compareUiState.accounts.entries())
-        .map(([key, node]) => {
-            const boardsHtml = [...node.localBoards, ...node.remoteBoards]
-                .filter((board, index, list) => list.findIndex((item) => item.side === board.side && item.id === board.id) === index)
-                .map((board) => {
-                    const sideLabel = board.side === "local" ? "本地" : "远程";
-                    return `<li class="compare-board-item compare-board-item--${board.side}">
-                        <span class="compare-board-side">${sideLabel}</span>
-                        <strong>${escapeHtml(board.title || board.id)}</strong>
-                        <span class="compare-board-meta">${escapeHtml(board.organization || "—")} · ${board.list_count || 0} 列表 · ${board.card_count || 0} 卡片</span>
-                    </li>`;
-                })
-                .join("");
-            return `
-                <details class="compare-account-node" open>
-                    <summary>
-                        <span class="compare-account-name">${escapeHtml(node.displayName || key)}</span>
-                        <span class="compare-account-status compare-account-status--${escapeHtml(node.status || "matched")}">${escapeHtml(statusLabels[node.status] || node.status || "")}</span>
-                    </summary>
-                    <ul class="compare-board-list">${boardsHtml || '<li class="compare-board-empty">暂无看板</li>'}</ul>
-                </details>
-            `;
-        })
-        .join("");
+    workspace.hidden = false;
+
+    const sections = [];
+    if (compareUiState.accountPairs.length) {
+        sections.push('<div class="compare-diff-section-label">账号对齐</div>');
+        sections.push(
+            compareUiState.accountPairs.map((pair) => renderCompareAccountPairRow(pair)).join(""),
+        );
+    }
+
+    if (compareUiState.boardPairs.length) {
+        sections.push('<div class="compare-diff-section-label">看板对比</div>');
+        let currentAccount = "";
+        for (let index = 0; index < compareUiState.boardPairs.length; index += 1) {
+            const pair = compareUiState.boardPairs[index];
+            const accountLabel = pair.display_name || `${pair.tenant_type}:${pair.tenant_id}`;
+            if (accountLabel !== currentAccount) {
+                currentAccount = accountLabel;
+                sections.push(`<div class="compare-diff-group-label">${escapeHtml(accountLabel)}</div>`);
+            }
+            sections.push(renderCompareBoardPairRow(pair, index, getCompareResultForPair(index)));
+        }
+    }
+
+    body.innerHTML = sections.filter(Boolean).join("") || '<p class="compare-detail-empty">当前筛选下无结果</p>';
+    bindCompareWorkspaceRows();
+}
+
+function bindCompareWorkspaceRows() {
+    document.querySelectorAll(".compare-sync-btn").forEach((button) => {
+        button.addEventListener("click", async (event) => {
+            event.stopPropagation();
+            if (button.disabled) {
+                return;
+            }
+            const pairIndex = Number(button.dataset.pairIndex);
+            const direction = button.dataset.syncDirection;
+            await syncComparePair(pairIndex, direction, button);
+        });
+    });
+
+    document.querySelectorAll(".compare-row-detail-btn").forEach((button) => {
+        button.addEventListener("click", async (event) => {
+            event.stopPropagation();
+            const pairIndex = Number(button.dataset.pairIndex);
+            if (Number(compareUiState.expandedPairIndex) === pairIndex) {
+                compareUiState.expandedPairIndex = null;
+                renderCompareWorkspace();
+                return;
+            }
+            compareUiState.expandedPairIndex = pairIndex;
+            renderCompareWorkspace();
+            const result = getCompareResultForPair(pairIndex);
+            if (!result && compareUiState.sessionId) {
+                try {
+                    const loaded = await fetchComparePairDetail(pairIndex);
+                    const existingIndex = compareUiState.boardResults.findIndex(
+                        (item) => Number(item.pair_index) === pairIndex,
+                    );
+                    if (existingIndex >= 0) {
+                        compareUiState.boardResults[existingIndex] = loaded;
+                    } else {
+                        compareUiState.boardResults.push(loaded);
+                    }
+                    renderCompareWorkspace();
+                } catch (error) {
+                    const expandBody = document.getElementById(`compareExpandBody-${pairIndex}`);
+                    if (expandBody) {
+                        expandBody.innerHTML = `<p class="compare-detail-error">${escapeHtml(error.message || "加载失败")}</p>`;
+                    }
+                }
+            }
+        });
+    });
+}
+
+function bindCompareFilters() {
+    document.querySelectorAll("[data-compare-filter]").forEach((button) => {
+        button.addEventListener("click", () => {
+            compareUiState.activeFilter = button.dataset.compareFilter || "all";
+            document.querySelectorAll("[data-compare-filter]").forEach((node) => {
+                node.classList.toggle("active", node === button);
+            });
+            renderCompareWorkspace();
+        });
+    });
 }
 
 function compareStatusLabel(status) {
@@ -2617,41 +2803,17 @@ function compareStatusLabel(status) {
         only_local: "仅本地",
         only_remote: "仅远程",
         error: "错误",
+        pending: "对比中",
     };
     return labels[status] || status || "—";
 }
 
+function renderCompareTree() {
+    renderCompareWorkspace();
+}
+
 function renderCompareResults() {
-    const wrap = document.getElementById("compareResults");
-    const body = document.getElementById("compareResultsBody");
-    if (!wrap || !body) {
-        return;
-    }
-    if (!compareUiState.boardResults.length) {
-        wrap.hidden = true;
-        body.innerHTML = "";
-        return;
-    }
-    wrap.hidden = false;
-    body.innerHTML = compareUiState.boardResults
-        .map((item) => {
-            const status = item.status || "equal";
-            return `
-                <tr>
-                    <td>${escapeHtml(item.local_title || item.local_board_id || "—")}</td>
-                    <td>${escapeHtml(item.remote_title || item.remote_board_id || "—")}</td>
-                    <td><span class="compare-result-badge compare-result-badge--${escapeHtml(status)}">${escapeHtml(compareStatusLabel(status))}</span></td>
-                    <td><button class="btn btn-sm btn-outline-primary compare-detail-btn" data-pair-index="${item.pair_index}" type="button">详情</button></td>
-                </tr>
-            `;
-        })
-        .join("");
-    body.querySelectorAll(".compare-detail-btn").forEach((button) => {
-        button.addEventListener("click", () => {
-            const pairIndex = Number(button.dataset.pairIndex);
-            openCompareDetail(pairIndex);
-        });
-    });
+    renderCompareWorkspace();
 }
 
 function renderCompareDetailContent(result) {
@@ -2679,21 +2841,32 @@ function renderCompareDetailContent(result) {
         `);
     }
     if (result.lists) {
-        const added = (result.lists.added || []).map((item) => `<li>+ ${escapeHtml(item.title || item.id)}</li>`).join("");
-        const removed = (result.lists.removed || []).map((item) => `<li>- ${escapeHtml(item.title || item.id)}</li>`).join("");
-        const changed = (result.lists.changed || [])
-            .map((item) => {
-                const fields = Object.entries(item.fields || {})
-                    .map(([key, value]) => `${key}: ${JSON.stringify(value.local)} → ${JSON.stringify(value.remote)}`)
-                    .join("; ");
-                return `<li>Δ ${escapeHtml(item.id)} ${escapeHtml(fields)}</li>`;
-            })
-            .join("");
+        const rows = [];
+        for (const item of result.lists.removed || []) {
+            rows.push(
+                `<tr class="compare-side-row compare-side-row--only-local"><td>${escapeHtml(item.title || item.id)}</td><td class="compare-side-empty">—</td></tr>`,
+            );
+        }
+        for (const item of result.lists.added || []) {
+            rows.push(
+                `<tr class="compare-side-row compare-side-row--only-remote"><td class="compare-side-empty">—</td><td>${escapeHtml(item.title || item.id)}</td></tr>`,
+            );
+        }
+        for (const item of result.lists.changed || []) {
+            const localTitle = item.fields?.title?.local ?? item.id;
+            const remoteTitle = item.fields?.title?.remote ?? item.id;
+            rows.push(
+                `<tr class="compare-side-row compare-side-row--changed"><td>${escapeHtml(String(localTitle))}</td><td>${escapeHtml(String(remoteTitle))}</td></tr>`,
+            );
+        }
         sections.push(`
             <section class="compare-detail-section">
                 <h4>列表结构 <span class="compare-result-badge compare-result-badge--${escapeHtml(result.lists.status || "equal")}">${escapeHtml(compareStatusLabel(result.lists.status))}</span></h4>
-                <ul class="compare-detail-list">${added}${removed}${changed || ""}</ul>
-                ${!added && !removed && !changed ? '<p class="compare-detail-empty">无列表差异</p>' : ""}
+                ${
+                    rows.length
+                        ? `<table class="compare-side-table"><thead><tr><th>本地</th><th>远程</th></tr></thead><tbody>${rows.join("")}</tbody></table>`
+                        : '<p class="compare-detail-empty">列表结构一致</p>'
+                }
             </section>
         `);
     }
@@ -2706,13 +2879,26 @@ function renderCompareDetailContent(result) {
                 const added = (diff.added || []).length;
                 const removed = (diff.removed || []).length;
                 const changed = (diff.changed || []).length;
-                return `<li>列表 ${escapeHtml(listId)}：+${added} -${removed} Δ${changed}</li>`;
+                const status =
+                    added || removed || changed
+                        ? "changed"
+                        : "equal";
+                return `
+                    <tr>
+                        <td>列表 ${escapeHtml(listId)}</td>
+                        <td>${removed ? `仅本地 ${removed}` : "—"}</td>
+                        <td>${added ? `仅远程 ${added}` : "—"}</td>
+                        <td>${changed ? `差异 ${changed}` : "—"}</td>
+                    </tr>`;
             })
             .join("");
         sections.push(`
             <section class="compare-detail-section">
                 <h4>卡片摘要</h4>
-                <ul class="compare-detail-list">${cardsHtml}</ul>
+                <table class="compare-side-table">
+                    <thead><tr><th>列表</th><th>本地</th><th>远程</th><th>变更</th></tr></thead>
+                    <tbody>${cardsHtml}</tbody>
+                </table>
             </section>
         `);
     }
@@ -2736,6 +2922,68 @@ async function fetchComparePairDetail(pairIndex) {
         throw new Error(payload.message || "加载对比详情失败");
     }
     return payload;
+}
+
+async function syncComparePair(pairIndex, direction, triggerButton) {
+    if (!compareUiState.sessionId) {
+        return;
+    }
+    const pair = compareUiState.boardPairs[pairIndex];
+    if (!pair) {
+        return;
+    }
+    const directionLabel = direction === "to_remote" ? "本地 → 远程" : "远程 → 本地";
+    const sideLabel = direction === "to_remote" ? pair.local_title || pair.local_board_id : pair.remote_title || pair.remote_board_id;
+    const confirmed = window.confirm(`确定将「${sideLabel || "看板"}」${directionLabel} 同步？\n匹配看板将覆盖目标侧内容。`);
+    if (!confirmed) {
+        return;
+    }
+
+    const buttons = document.querySelectorAll(`.compare-sync-btn[data-pair-index="${pairIndex}"]`);
+    buttons.forEach((node) => {
+        node.disabled = true;
+    });
+    if (triggerButton) {
+        triggerButton.textContent = "…";
+    }
+
+    try {
+        const response = await fetch(`/api/compare/sessions/${encodeURIComponent(compareUiState.sessionId)}/sync`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                pair_index: pairIndex,
+                direction,
+                mode: "replace",
+            }),
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+            throw new Error(payload.message || "同步失败");
+        }
+        if (payload.queued) {
+            compareUiState.boardPairs[pairIndex] = {
+                ...compareUiState.boardPairs[pairIndex],
+                ...payload.queued,
+            };
+        }
+        if (payload.result) {
+            const existingIndex = compareUiState.boardResults.findIndex(
+                (item) => Number(item.pair_index) === pairIndex,
+            );
+            if (existingIndex >= 0) {
+                compareUiState.boardResults[existingIndex] = payload.result;
+            } else {
+                compareUiState.boardResults.push(payload.result);
+            }
+        }
+        compareUiState.expandedPairIndex = pairIndex;
+        renderCompareWorkspace();
+        showSuccess(payload.message || "同步成功");
+    } catch (error) {
+        showError(error.message || "同步失败");
+        renderCompareWorkspace();
+    }
 }
 
 async function openCompareDetail(pairIndex) {
@@ -2790,8 +3038,9 @@ function applyCompareStreamEvent(event) {
     updateCompareProgress(event);
 
     if (event.step === "accounts_matched") {
+        compareUiState.accountPairs = event.pairs || [];
         compareUiState.accounts.clear();
-        for (const pair of event.pairs || []) {
+        for (const pair of compareUiState.accountPairs) {
             if (pair.local) {
                 const key = accountKeyFromParts(pair.local.tenant_type, pair.local.tenant_id);
                 ensureCompareAccountNode(key, pair.local.display_name, pair.status);
@@ -2801,7 +3050,7 @@ function applyCompareStreamEvent(event) {
                 ensureCompareAccountNode(key, pair.remote.display_name, pair.status);
             }
         }
-        renderCompareTree();
+        renderCompareWorkspace();
     }
 
     if (event.step === "boards_local" || event.step === "boards_remote") {
@@ -2812,11 +3061,13 @@ function applyCompareStreamEvent(event) {
         for (const board of event.items || []) {
             target.push({ ...board, side });
         }
-        renderCompareTree();
+        renderCompareWorkspace();
     }
 
     if (event.step === "board_pair_queued") {
-        compareUiState.boardPairs.push(event);
+        const pairIndex = Number(event.pair_index);
+        compareUiState.boardPairs[pairIndex] = event;
+        renderCompareWorkspace();
     }
 
     if (event.step === "board_pair_done" && event.summary) {
@@ -2828,7 +3079,7 @@ function applyCompareStreamEvent(event) {
         } else {
             compareUiState.boardResults.push(event.summary);
         }
-        renderCompareResults();
+        renderCompareWorkspace();
     }
 
     if (event.step === "session_done") {
@@ -3025,6 +3276,7 @@ function bindBoardComparePanel() {
 
     document.getElementById("compareDetailCloseBtn")?.addEventListener("click", closeCompareDetail);
     document.getElementById("compareDetailBackdrop")?.addEventListener("click", closeCompareDetail);
+    bindCompareFilters();
 }
 
 function renderDataTransferPanel() {
