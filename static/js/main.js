@@ -2431,6 +2431,10 @@ function renderBoardComparePanel() {
                         <button class="compare-filter-btn" type="button" data-compare-filter="only_local">仅本地</button>
                         <button class="compare-filter-btn" type="button" data-compare-filter="only_remote">仅远程</button>
                     </div>
+                    <div class="compare-collapse-toolbar">
+                        <button class="btn btn-sm btn-outline-secondary" type="button" id="compareExpandAllBtn">全部展开</button>
+                        <button class="btn btn-sm btn-outline-secondary" type="button" id="compareCollapseAllBtn">全部折叠</button>
+                    </div>
                     <p class="compare-workspace-hint">左右对照：一侧有、一侧无时只显示存在的一侧（类似 Beyond Compare / Navicat）</p>
                 </div>
 
@@ -2471,7 +2475,17 @@ const compareUiState = {
     expandedPairIndex: null,
     canResume: false,
     resumeFromPairIndex: 0,
+    collapsedKeys: new Set(),
+    collapseInitialized: false,
 };
+
+const COMPARE_BOARD_STATUS_GROUPS = [
+    { key: "changed", label: "有差异", statuses: new Set(["changed", "error"]) },
+    { key: "only_local", label: "仅本地", statuses: new Set(["only_local"]) },
+    { key: "only_remote", label: "仅远程", statuses: new Set(["only_remote"]) },
+    { key: "equal", label: "一致", statuses: new Set(["equal"]) },
+    { key: "pending", label: "对比中", statuses: new Set(["pending"]) },
+];
 
 function resetCompareUiState() {
     compareUiState.sessionId = null;
@@ -2484,6 +2498,154 @@ function resetCompareUiState() {
     compareUiState.expandedPairIndex = null;
     compareUiState.canResume = false;
     compareUiState.resumeFromPairIndex = 0;
+    compareUiState.collapsedKeys = new Set();
+    compareUiState.collapseInitialized = false;
+}
+
+function isCompareCollapsed(key) {
+    return compareUiState.collapsedKeys.has(key);
+}
+
+function toggleCompareCollapsed(key) {
+    if (compareUiState.collapsedKeys.has(key)) {
+        compareUiState.collapsedKeys.delete(key);
+    } else {
+        compareUiState.collapsedKeys.add(key);
+    }
+}
+
+function setAllCompareCollapsed(collapsed) {
+    if (collapsed) {
+        for (const node of document.querySelectorAll("[data-collapse-key]")) {
+            compareUiState.collapsedKeys.add(node.dataset.collapseKey);
+        }
+    } else {
+        compareUiState.collapsedKeys.clear();
+    }
+    renderCompareWorkspace();
+}
+
+function ensureCompareCollapseDefaults() {
+    if (compareUiState.collapseInitialized) {
+        return;
+    }
+    const boardCount = compareUiState.boardPairs.length;
+    const accountCount = compareUiState.accountPairs.length;
+    if (!boardCount && !accountCount) {
+        return;
+    }
+    compareUiState.collapseInitialized = true;
+    compareUiState.collapsedKeys = new Set();
+
+    if (boardCount > 8 && accountCount > 0) {
+        compareUiState.collapsedKeys.add("section:accounts");
+    }
+    if (boardCount > 5) {
+        compareUiState.collapsedKeys.add("status:equal");
+    }
+    if (boardCount > 20) {
+        compareUiState.collapsedKeys.add("status:pending");
+    }
+}
+
+function getComparePairRowStatus(pair, pairIndex) {
+    const result = getCompareResultForPair(pairIndex);
+    const pairStatus = pair.status || "matched";
+    const status = result?.status || (pairStatus === "matched" ? "pending" : pairStatus);
+    if (status === "pending" && pairStatus !== "matched") {
+        return pairStatus;
+    }
+    return status;
+}
+
+function collectVisibleCompareBoardGroups() {
+    const buckets = new Map(
+        COMPARE_BOARD_STATUS_GROUPS.map((group) => [
+            group.key,
+            { ...group, accounts: new Map(), total: 0 },
+        ]),
+    );
+
+    for (let index = 0; index < compareUiState.boardPairs.length; index += 1) {
+        const pair = compareUiState.boardPairs[index];
+        const pairStatus = pair.status || "matched";
+        const rowStatus = getComparePairRowStatus(pair, index);
+        const filterStatus = rowStatus === "pending" ? pairStatus : rowStatus;
+        if (!compareRowMatchesFilter(filterStatus, pairStatus)) {
+            continue;
+        }
+        const statusGroup = COMPARE_BOARD_STATUS_GROUPS.find((group) => group.statuses.has(rowStatus));
+        const bucket = buckets.get(statusGroup?.key || "changed");
+        const accountKey = `${pair.tenant_type || ""}:${pair.tenant_id || ""}`;
+        const accountLabel = pair.display_name || accountKey || "未命名账号";
+        if (!bucket.accounts.has(accountKey)) {
+            bucket.accounts.set(accountKey, { key: accountKey, label: accountLabel, items: [] });
+        }
+        bucket.accounts.get(accountKey).items.push({ pair, index, rowStatus });
+        bucket.total += 1;
+    }
+
+    return COMPARE_BOARD_STATUS_GROUPS.map((group) => buckets.get(group.key)).filter((group) => group.total > 0);
+}
+
+function renderCompareCollapseHeader(key, label, count, level = 0) {
+    const collapsed = isCompareCollapsed(key);
+    const levelClass =
+        level === 2 ? "compare-collapse-header--account" : level === 1 ? "compare-collapse-header--status" : "compare-collapse-header--section";
+    return `
+        <button
+            type="button"
+            class="compare-collapse-header ${levelClass} ${collapsed ? "is-collapsed" : ""}"
+            data-collapse-key="${escapeHtml(key)}"
+            aria-expanded="${collapsed ? "false" : "true"}"
+        >
+            <span class="compare-collapse-chevron" aria-hidden="true">${collapsed ? "▶" : "▼"}</span>
+            <span class="compare-collapse-title">${escapeHtml(label)}</span>
+            ${count != null ? `<span class="compare-collapse-count">${count}</span>` : ""}
+        </button>
+    `;
+}
+
+function renderCompareCollapseBody(key, content) {
+    const collapsed = isCompareCollapsed(key);
+    if (!content) {
+        return "";
+    }
+    return `<div class="compare-collapse-body ${collapsed ? "is-collapsed" : ""}" data-collapse-body="${escapeHtml(key)}">${content}</div>`;
+}
+
+function renderCompareBoardGroupContent(statusKey, statusGroup) {
+    const accountGroups = [...statusGroup.accounts.values()];
+    if (!accountGroups.length) {
+        return "";
+    }
+
+    const useAccountGroups = accountGroups.length > 1 || compareUiState.boardPairs.length > 12;
+    if (!useAccountGroups) {
+        return accountGroups
+            .flatMap((accountGroup) =>
+                accountGroup.items.map(({ pair, index }) =>
+                    renderCompareBoardPairRow(pair, index, getCompareResultForPair(index)),
+                ),
+            )
+            .join("");
+    }
+
+    return accountGroups
+        .map((accountGroup) => {
+            const groupKey = `group:${statusKey}:${accountGroup.key}`;
+            const rows = accountGroup.items
+                .map(({ pair, index }) => renderCompareBoardPairRow(pair, index, getCompareResultForPair(index)))
+                .join("");
+            if (!rows) {
+                return "";
+            }
+            return (
+                renderCompareCollapseHeader(groupKey, accountGroup.label, accountGroup.items.length, 2) +
+                renderCompareCollapseBody(groupKey, rows)
+            );
+        })
+        .join("");
 }
 
 function updateCompareProgress(event) {
@@ -2709,27 +2871,27 @@ function renderCompareWorkspace() {
         return;
     }
     workspace.hidden = false;
+    ensureCompareCollapseDefaults();
 
     const sections = [];
     if (compareUiState.accountPairs.length) {
-        sections.push('<div class="compare-diff-section-label">账号对齐</div>');
-        sections.push(
-            compareUiState.accountPairs.map((pair) => renderCompareAccountPairRow(pair)).join(""),
-        );
+        const accountRows = compareUiState.accountPairs.map((pair) => renderCompareAccountPairRow(pair)).join("");
+        sections.push(renderCompareCollapseHeader("section:accounts", "账号对齐", compareUiState.accountPairs.length, 0));
+        sections.push(renderCompareCollapseBody("section:accounts", accountRows));
     }
 
-    if (compareUiState.boardPairs.length) {
-        sections.push('<div class="compare-diff-section-label">看板对比</div>');
-        let currentAccount = "";
-        for (let index = 0; index < compareUiState.boardPairs.length; index += 1) {
-            const pair = compareUiState.boardPairs[index];
-            const accountLabel = pair.display_name || `${pair.tenant_type}:${pair.tenant_id}`;
-            if (accountLabel !== currentAccount) {
-                currentAccount = accountLabel;
-                sections.push(`<div class="compare-diff-group-label">${escapeHtml(accountLabel)}</div>`);
-            }
-            sections.push(renderCompareBoardPairRow(pair, index, getCompareResultForPair(index)));
-        }
+    const boardStatusGroups = collectVisibleCompareBoardGroups();
+    if (boardStatusGroups.length) {
+        const visibleBoardCount = boardStatusGroups.reduce((sum, group) => sum + group.total, 0);
+        const boardsContent = boardStatusGroups
+            .map((statusGroup) => {
+                const statusKey = `status:${statusGroup.key}`;
+                const inner = renderCompareBoardGroupContent(statusGroup.key, statusGroup);
+                return renderCompareCollapseHeader(statusKey, statusGroup.label, statusGroup.total, 1) + renderCompareCollapseBody(statusKey, inner);
+            })
+            .join("");
+        sections.push(renderCompareCollapseHeader("section:boards", "看板对比", visibleBoardCount, 0));
+        sections.push(renderCompareCollapseBody("section:boards", boardsContent));
     }
 
     body.innerHTML = sections.filter(Boolean).join("") || '<p class="compare-detail-empty">当前筛选下无结果</p>';
@@ -2737,6 +2899,28 @@ function renderCompareWorkspace() {
 }
 
 function bindCompareWorkspaceRows() {
+    document.querySelectorAll(".compare-collapse-header").forEach((button) => {
+        button.addEventListener("click", (event) => {
+            event.stopPropagation();
+            const key = button.dataset.collapseKey;
+            if (!key) {
+                return;
+            }
+            toggleCompareCollapsed(key);
+            const collapsed = isCompareCollapsed(key);
+            button.classList.toggle("is-collapsed", collapsed);
+            button.setAttribute("aria-expanded", collapsed ? "false" : "true");
+            const chevron = button.querySelector(".compare-collapse-chevron");
+            if (chevron) {
+                chevron.textContent = collapsed ? "▶" : "▼";
+            }
+            const bodyNode = document.querySelector(`[data-collapse-body="${CSS.escape(key)}"]`);
+            if (bodyNode) {
+                bodyNode.classList.toggle("is-collapsed", collapsed);
+            }
+        });
+    });
+
     document.querySelectorAll(".compare-sync-btn").forEach((button) => {
         button.addEventListener("click", async (event) => {
             event.stopPropagation();
@@ -2793,6 +2977,13 @@ function bindCompareFilters() {
             });
             renderCompareWorkspace();
         });
+    });
+
+    document.getElementById("compareExpandAllBtn")?.addEventListener("click", () => {
+        setAllCompareCollapsed(false);
+    });
+    document.getElementById("compareCollapseAllBtn")?.addEventListener("click", () => {
+        setAllCompareCollapsed(true);
     });
 }
 
@@ -3083,6 +3274,7 @@ function applyCompareStreamEvent(event) {
     }
 
     if (event.step === "session_done") {
+        compareUiState.collapseInitialized = false;
         renderCompareSummary(event);
     }
 }

@@ -1114,6 +1114,12 @@ body {
     margin-bottom: 12px;
 }
 
+.compare-collapse-toolbar {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
 .compare-workspace-hint {
     margin: 0;
     font-size: 12px;
@@ -1282,6 +1288,80 @@ body {
     color: var(--muted);
     background: rgba(148, 163, 184, 0.08);
     border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.compare-collapse-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 10px 14px;
+    border: none;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+    background: rgba(148, 163, 184, 0.08);
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+    font: inherit;
+}
+
+.compare-collapse-header--section {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+
+.compare-collapse-header--status {
+    padding-left: 28px;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: normal;
+    color: inherit;
+    background: rgba(148, 163, 184, 0.05);
+}
+
+.compare-collapse-header--account {
+    padding-left: 44px;
+    font-size: 13px;
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: normal;
+    color: inherit;
+    background: rgba(148, 163, 184, 0.03);
+}
+
+.compare-collapse-header:hover {
+    background: rgba(59, 130, 246, 0.08);
+}
+
+.compare-collapse-chevron {
+    flex: 0 0 auto;
+    width: 14px;
+    font-size: 11px;
+    opacity: 0.7;
+}
+
+.compare-collapse-title {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.compare-collapse-count {
+    flex: 0 0 auto;
+    min-width: 24px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.18);
+    font-size: 12px;
+    font-weight: 600;
+    text-align: center;
+}
+
+.compare-collapse-body.is-collapsed {
+    display: none;
 }
 
 .compare-diff-group-label {
