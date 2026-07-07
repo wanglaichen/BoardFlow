@@ -1274,6 +1274,19 @@ body {
     gap: 6px;
 }
 
+.compare-account-status-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.compare-account-status-actions .compare-sync-actions {
+    margin-bottom: 0;
+}
+
 .compare-sync-btn {
     min-width: 32px;
     height: 28px;

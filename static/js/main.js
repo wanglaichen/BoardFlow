@@ -2999,33 +2999,90 @@ function renderCompareAccountDeleteAction(accountPairIndex, pair, side) {
     if (!compareUiState.sessionId) {
         return "";
     }
-    const count = countAccountDeletableBoards(pair, side);
-    if (count <= 0) {
+    const status = pair.status || "matched";
+    if (side === "local") {
+        if (status !== "only_local" || !pair.local) {
+            return "";
+        }
+    } else if (status !== "only_remote" || !pair.remote) {
         return "";
     }
+    const count = countAccountDeletableBoards(pair, side);
     const sideLabel = side === "local" ? "本地" : "远程";
-    return `<button class="compare-delete-btn" type="button" title="删除${sideLabel}侧全部 ${count} 个看板" data-delete-scope="account" data-delete-side="${side}" data-account-pair-index="${accountPairIndex}" aria-label="删除${sideLabel}侧全部看板">删除</button>`;
+    const title =
+        count > 0 ? `删除${sideLabel}侧全部 ${count} 个看板` : `该${sideLabel}账号下暂无可删除看板`;
+    return `<button class="compare-delete-btn" type="button" title="${escapeHtml(title)}" data-delete-scope="account" data-delete-side="${side}" data-account-pair-index="${accountPairIndex}" ${count > 0 ? "" : "disabled"} aria-label="删除${sideLabel}侧全部看板">删除</button>`;
+}
+
+function renderCompareAccountSyncActions(accountPairIndex, pair) {
+    if (!compareUiState.sessionId) {
+        return "";
+    }
+    const status = pair.status || "matched";
+    const showToRemote = status !== "only_remote" && Boolean(pair.local);
+    const showToLocal = status !== "only_local" && Boolean(pair.remote);
+    if (!showToRemote && !showToLocal) {
+        return "";
+    }
+    const toRemoteCount = countAccountSyncableBoards(pair, "to_remote");
+    const toLocalCount = countAccountSyncableBoards(pair, "to_local");
+    const canToRemote = showToRemote && toRemoteCount > 0;
+    const canToLocal = showToLocal && toLocalCount > 0;
+    const toLocalTitle =
+        toLocalCount > 0
+            ? `该账号全部看板：远程 → 本地（${toLocalCount} 个）`
+            : "该账号下暂无可同步看板";
+    const toRemoteTitle =
+        toRemoteCount > 0
+            ? `该账号全部看板：本地 → 远程（${toRemoteCount} 个）`
+            : "该账号下暂无可同步看板";
+    const buttons = [];
+    if (showToLocal) {
+        buttons.push(
+            `<button class="compare-sync-btn" type="button" title="${escapeHtml(toLocalTitle)}" data-sync-scope="account" data-sync-direction="to_local" data-account-pair-index="${accountPairIndex}" ${canToLocal ? "" : "disabled"} aria-label="账号全部看板同步到本地">←</button>`,
+        );
+    }
+    if (showToRemote) {
+        buttons.push(
+            `<button class="compare-sync-btn" type="button" title="${escapeHtml(toRemoteTitle)}" data-sync-scope="account" data-sync-direction="to_remote" data-account-pair-index="${accountPairIndex}" ${canToRemote ? "" : "disabled"} aria-label="账号全部看板同步到远程">→</button>`,
+        );
+    }
+    return `<div class="compare-sync-actions">${buttons.join("")}</div>`;
+}
+
+function renderCompareAccountStatusActions(accountPairIndex, pair) {
+    const status = pair.status || "matched";
+    const syncHtml = renderCompareAccountSyncActions(accountPairIndex, pair);
+    let deleteHtml = "";
+    if (status === "only_remote") {
+        deleteHtml = renderCompareAccountDeleteAction(accountPairIndex, pair, "remote");
+    } else if (status === "only_local") {
+        deleteHtml = renderCompareAccountDeleteAction(accountPairIndex, pair, "local");
+    }
+    if (!syncHtml && !deleteHtml) {
+        return "";
+    }
+    return `<div class="compare-account-status-actions">${syncHtml}${deleteHtml}</div>`;
 }
 
 function renderCompareAccountPairRow(pair, accountPairIndex) {
     const status = pair.status || "matched";
     const localName = pair.local?.display_name || pair.local?.tenant_id || "—";
     const remoteName = pair.remote?.display_name || pair.remote?.tenant_id || "—";
-    const localDelete = renderCompareAccountDeleteAction(accountPairIndex, pair, "local");
-    const remoteDelete = renderCompareAccountDeleteAction(accountPairIndex, pair, "remote");
+    const statusActions = renderCompareAccountStatusActions(accountPairIndex, pair);
     const localCell =
         status === "only_remote"
             ? `<div class="compare-cell compare-cell--empty compare-cell--local"><span class="compare-cell-empty-mark">—</span></div>`
-            : `<div class="compare-cell compare-cell--local"><div class="compare-cell-title">${escapeHtml(localName)}</div><div class="compare-cell-meta">账号</div>${localDelete ? `<div class="compare-cell-actions">${localDelete}</div>` : ""}</div>`;
+            : `<div class="compare-cell compare-cell--local"><div class="compare-cell-title">${escapeHtml(localName)}</div><div class="compare-cell-meta">账号</div></div>`;
     const remoteCell =
         status === "only_local"
             ? `<div class="compare-cell compare-cell--empty compare-cell--remote"><span class="compare-cell-empty-mark">—</span></div>`
-            : `<div class="compare-cell compare-cell--remote"><div class="compare-cell-title">${escapeHtml(remoteName)}</div><div class="compare-cell-meta">账号</div>${remoteDelete ? `<div class="compare-cell-actions">${remoteDelete}</div>` : ""}</div>`;
+            : `<div class="compare-cell compare-cell--remote"><div class="compare-cell-title">${escapeHtml(remoteName)}</div><div class="compare-cell-meta">账号</div></div>`;
     return `
         <div class="compare-diff-row compare-diff-row--account compare-diff-row--${escapeHtml(status)}">
             ${localCell}
             <div class="compare-cell compare-cell--status">
-                ${renderCompareAccountSyncActions(accountPairIndex, pair)}
+                ${statusActions}
                 <span class="compare-result-badge compare-result-badge--${escapeHtml(status === "matched" ? "equal" : status)}">${escapeHtml(status === "matched" ? "账号匹配" : compareStatusLabel(status))}</span>
             </div>
             ${remoteCell}
@@ -3057,26 +3114,6 @@ function countAccountSyncableBoards(accountPair, direction) {
         }
         return pairStatus !== "only_local" && Boolean(pair.remote_board_id);
     }).length;
-}
-
-function renderCompareAccountSyncActions(accountPairIndex, pair) {
-    if (!compareUiState.sessionId) {
-        return "";
-    }
-    const status = pair.status || "matched";
-    const canToRemote =
-        status !== "only_remote" && Boolean(pair.local) && countAccountSyncableBoards(pair, "to_remote") > 0;
-    const canToLocal =
-        status !== "only_local" && Boolean(pair.remote) && countAccountSyncableBoards(pair, "to_local") > 0;
-    if (!canToRemote && !canToLocal) {
-        return "";
-    }
-    return `
-        <div class="compare-sync-actions">
-            <button class="compare-sync-btn" type="button" title="该账号全部看板：远程 → 本地" data-sync-scope="account" data-sync-direction="to_local" data-account-pair-index="${accountPairIndex}" ${canToLocal ? "" : "disabled"} aria-label="账号全部看板同步到本地">←</button>
-            <button class="compare-sync-btn" type="button" title="该账号全部看板：本地 → 远程" data-sync-scope="account" data-sync-direction="to_remote" data-account-pair-index="${accountPairIndex}" ${canToRemote ? "" : "disabled"} aria-label="账号全部看板同步到远程">→</button>
-        </div>
-    `;
 }
 
 function renderCompareSyncActions(pairIndex, pair, status) {
