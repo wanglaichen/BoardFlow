@@ -968,6 +968,22 @@ body {
     margin: 18px 0;
 }
 
+.compare-history-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.compare-history-row select {
+    flex: 1 1 220px;
+    min-width: 0;
+}
+
+.compare-history-row .btn {
+    flex: 0 0 auto;
+}
+
 .compare-field {
     display: grid;
     gap: 6px;

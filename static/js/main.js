@@ -2384,8 +2384,18 @@ function renderBoardComparePanel() {
 
             <div class="compare-config">
                 <label class="compare-field">
+                    <span>历史远程服务器</span>
+                    <div class="compare-history-row">
+                        <select id="compareRemoteHistorySelect" aria-label="选择历史远程服务器">
+                            <option value="">— 手动输入或选择历史 —</option>
+                        </select>
+                        <button class="btn btn-sm btn-outline-secondary" type="button" id="compareRemoteHistoryRemoveBtn" disabled title="从历史中移除">移除</button>
+                    </div>
+                </label>
+                <label class="compare-field">
                     <span>远程地址</span>
-                    <input id="compareRemoteUrlInput" type="url" placeholder="https://board-flow-wheat.vercel.app" autocomplete="off">
+                    <input id="compareRemoteUrlInput" type="url" placeholder="https://board-flow-wheat.vercel.app" autocomplete="off" list="compareRemoteUrlSuggestions">
+                    <datalist id="compareRemoteUrlSuggestions"></datalist>
                 </label>
                 <label class="compare-field">
                     <span>联邦令牌</span>
@@ -2487,6 +2497,159 @@ const COMPARE_BOARD_STATUS_GROUPS = [
     { key: "equal", label: "一致", statuses: new Set(["equal"]) },
     { key: "pending", label: "对比中", statuses: new Set(["pending"]) },
 ];
+
+const COMPARE_REMOTE_HISTORY_KEY = "boardflow:compare-remote-history";
+const COMPARE_REMOTE_LAST_KEY = "boardflow:compare-remote-last";
+const COMPARE_REMOTE_HISTORY_MAX = 16;
+
+function normalizeCompareRemoteUrl(url) {
+    return String(url || "")
+        .trim()
+        .replace(/\/+$/, "");
+}
+
+function loadCompareRemoteHistory() {
+    try {
+        const raw = localStorage.getItem(COMPARE_REMOTE_HISTORY_KEY);
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
+}
+
+function persistCompareRemoteHistory(items) {
+    localStorage.setItem(COMPARE_REMOTE_HISTORY_KEY, JSON.stringify(items.slice(0, COMPARE_REMOTE_HISTORY_MAX)));
+}
+
+function findCompareRemoteHistoryEntry(url) {
+    const normalized = normalizeCompareRemoteUrl(url);
+    if (!normalized) {
+        return null;
+    }
+    return loadCompareRemoteHistory().find((item) => normalizeCompareRemoteUrl(item.url) === normalized) || null;
+}
+
+function saveCompareRemoteHistoryEntry(entry) {
+    const url = normalizeCompareRemoteUrl(entry?.url);
+    if (!url) {
+        return;
+    }
+    const token = String(entry?.token || "").trim();
+    const label = String(entry?.label || entry?.remote_label || url).trim() || url;
+    const remoteVersion = String(entry?.remote_version || "").trim();
+    const now = new Date().toISOString();
+    const items = loadCompareRemoteHistory().filter((item) => normalizeCompareRemoteUrl(item.url) !== url);
+    items.unshift({
+        url,
+        token,
+        label,
+        remote_version: remoteVersion,
+        last_used_at: now,
+    });
+    persistCompareRemoteHistory(items);
+    localStorage.setItem(COMPARE_REMOTE_LAST_KEY, url);
+}
+
+function removeCompareRemoteHistoryEntry(url) {
+    const normalized = normalizeCompareRemoteUrl(url);
+    if (!normalized) {
+        return;
+    }
+    const items = loadCompareRemoteHistory().filter((item) => normalizeCompareRemoteUrl(item.url) !== normalized);
+    persistCompareRemoteHistory(items);
+    const last = localStorage.getItem(COMPARE_REMOTE_LAST_KEY);
+    if (last && normalizeCompareRemoteUrl(last) === normalized) {
+        if (items.length) {
+            localStorage.setItem(COMPARE_REMOTE_LAST_KEY, items[0].url);
+        } else {
+            localStorage.removeItem(COMPARE_REMOTE_LAST_KEY);
+        }
+    }
+}
+
+function getLastCompareRemoteHistoryEntry() {
+    const lastUrl = localStorage.getItem(COMPARE_REMOTE_LAST_KEY);
+    if (!lastUrl) {
+        return loadCompareRemoteHistory()[0] || null;
+    }
+    return findCompareRemoteHistoryEntry(lastUrl) || { url: normalizeCompareRemoteUrl(lastUrl), token: "" };
+}
+
+function formatCompareHistoryOptionLabel(item) {
+    const label = item?.label || item?.url || "远程";
+    const version = item?.remote_version ? ` · ${item.remote_version}` : "";
+    return `${label}${version}`;
+}
+
+function renderCompareRemoteHistoryOptions(selectedUrl = "") {
+    const select = document.getElementById("compareRemoteHistorySelect");
+    const datalist = document.getElementById("compareRemoteUrlSuggestions");
+    const removeBtn = document.getElementById("compareRemoteHistoryRemoveBtn");
+    const items = loadCompareRemoteHistory();
+    const normalizedSelected = normalizeCompareRemoteUrl(selectedUrl);
+
+    if (select) {
+        const options = ['<option value="">— 手动输入或选择历史 —</option>']
+            .concat(
+                items.map((item) => {
+                    const url = normalizeCompareRemoteUrl(item.url);
+                    const selected = url === normalizedSelected ? " selected" : "";
+                    return `<option value="${escapeHtml(url)}"${selected}>${escapeHtml(formatCompareHistoryOptionLabel(item))}</option>`;
+                }),
+            )
+            .join("");
+        select.innerHTML = options;
+    }
+
+    if (datalist) {
+        datalist.innerHTML = items
+            .map((item) => `<option value="${escapeHtml(normalizeCompareRemoteUrl(item.url))}"></option>`)
+            .join("");
+    }
+
+    if (removeBtn) {
+        removeBtn.disabled = !normalizedSelected || !findCompareRemoteHistoryEntry(normalizedSelected);
+    }
+}
+
+function applyCompareRemoteHistoryEntry(entry) {
+    if (!entry) {
+        return;
+    }
+    const urlInput = document.getElementById("compareRemoteUrlInput");
+    const tokenInput = document.getElementById("compareRemoteTokenInput");
+    const url = normalizeCompareRemoteUrl(entry.url);
+    if (urlInput) {
+        urlInput.value = url;
+    }
+    if (tokenInput && entry.token) {
+        tokenInput.value = entry.token;
+    }
+    renderCompareRemoteHistoryOptions(url);
+}
+
+function recordCompareRemoteServerFromInputs() {
+    const urlInput = document.getElementById("compareRemoteUrlInput");
+    const tokenInput = document.getElementById("compareRemoteTokenInput");
+    const health = compareUiState.remoteHealth || {};
+    saveCompareRemoteHistoryEntry({
+        url: urlInput?.value || "",
+        token: tokenInput?.value || "",
+        label: health.label || health.name || "",
+        remote_version: health.version || "",
+    });
+    renderCompareRemoteHistoryOptions(urlInput?.value || "");
+}
+
+function initCompareRemoteHistoryFields() {
+    const entry = getLastCompareRemoteHistoryEntry();
+    if (entry) {
+        applyCompareRemoteHistoryEntry(entry);
+    } else {
+        renderCompareRemoteHistoryOptions("");
+    }
+}
 
 function resetCompareUiState() {
     compareUiState.sessionId = null;
@@ -3716,6 +3879,7 @@ function applyCompareStreamEvent(event) {
 
     if (event.step === "session_done") {
         compareUiState.collapseInitialized = false;
+        recordCompareRemoteServerFromInputs();
         renderCompareSummary(event);
     }
 }
@@ -3813,6 +3977,51 @@ function bindBoardComparePanel() {
         return;
     }
 
+    initCompareRemoteHistoryFields();
+
+    const historySelect = document.getElementById("compareRemoteHistorySelect");
+    const historyRemoveBtn = document.getElementById("compareRemoteHistoryRemoveBtn");
+
+    historySelect?.addEventListener("change", () => {
+        const url = historySelect.value;
+        if (!url) {
+            renderCompareRemoteHistoryOptions(remoteUrlInput.value.trim());
+            return;
+        }
+        const entry = findCompareRemoteHistoryEntry(url);
+        if (entry) {
+            applyCompareRemoteHistoryEntry(entry);
+        } else {
+            remoteUrlInput.value = normalizeCompareRemoteUrl(url);
+            renderCompareRemoteHistoryOptions(url);
+        }
+    });
+
+    historyRemoveBtn?.addEventListener("click", () => {
+        const url = historySelect?.value || remoteUrlInput.value.trim();
+        if (!url || !findCompareRemoteHistoryEntry(url)) {
+            return;
+        }
+        if (!window.confirm(`确定从历史记录中移除「${url}」？`)) {
+            return;
+        }
+        removeCompareRemoteHistoryEntry(url);
+        if (normalizeCompareRemoteUrl(remoteUrlInput.value) === normalizeCompareRemoteUrl(url)) {
+            remoteUrlInput.value = "";
+            if (remoteTokenInput) {
+                remoteTokenInput.value = "";
+            }
+        }
+        renderCompareRemoteHistoryOptions("");
+        if (historySelect) {
+            historySelect.value = "";
+        }
+    });
+
+    remoteUrlInput.addEventListener("input", () => {
+        renderCompareRemoteHistoryOptions(remoteUrlInput.value.trim());
+    });
+
     const runCompareFlow = async (runOptions = {}) => {
         const sessionId = compareUiState.sessionId;
         if (!sessionId) {
@@ -3875,6 +4084,7 @@ function bindBoardComparePanel() {
             const result = await createCompareSession(getPayload());
             compareUiState.sessionId = result.session_id;
             compareUiState.remoteHealth = result.remote_health;
+            renderCompareRemoteHistoryOptions(remoteUrlInput.value.trim());
             runBtn.disabled = false;
             if (healthBox) {
                 healthBox.hidden = false;
